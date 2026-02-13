@@ -2,6 +2,28 @@
 
 JSON-driven Tkinter monitor for fixture/bridge targets.
 
+## How It Talks To Apps
+
+The GUI is a blind hook-in. It does not import app code.
+
+Runtime flow:
+
+1. Launcher builds a root config that includes one or more app-owned target files.
+2. Each target file declares:
+   - `status.cwd` + `status.cmd[]` (how to fetch current runtime state JSON)
+   - `logs[]` (where to tail log streams by file glob)
+   - `actions[]` (which commands can be run from the UI)
+   - `ui.tabs[].widgets[]` (how to render values using `jsonpath`)
+3. `monitor.py` executes `status.cmd[]`, parses JSON, and renders widgets from configured paths.
+4. `monitor.py` tails configured logs and streams updates into log widgets.
+5. `monitor.py` executes configured actions and captures `stdout`/`stderr` into Action Output.
+
+App-side ownership:
+
+- App repo owns business mapping in `config/gui/monitor.<app>.target.json`.
+- GUI repo owns generic renderer + schemas.
+- App repo can change fields/actions/log mapping without GUI code changes.
+
 ## Quick Start
 
 ```bash
@@ -46,6 +68,7 @@ Key flags:
 
 - `--fixture-repo` / `--bridge-repo`
 - `--fixture-target` / `--bridge-target` (explicit file overrides)
+- `--include-fixture` / `--include-bridge`
 - `--config-out`
 - `--validate-only`
 - `--no-launch`
@@ -71,12 +94,32 @@ and writes one launcher per repo:
 
 Run in either repo:
 - `python scripts/gui_monitor.py`
+- fixture repo default: fixture tab only (add `--with-bridge` to include bridge tab)
+- bridge repo default: bridge tab only (add `--with-fixture` to include fixture tab)
 
 ## Config Versions
 
 - `configVersion: 2` = new explicit target model (preferred for new files).
 - Missing `configVersion` = assumed `v1` (back-compat only).
 - No heuristic mixing: v2 is only parsed when `configVersion` is explicitly `2`.
+
+## Versioning: config/gui vs bundle_version.json
+
+Short answer: app behavior/version should stay app-owned in `config/gui`.
+
+Use today (already in place):
+
+- `config/gui/monitor.<app>.target.json` + `config/gui/monitor.target.v2.schema.json`
+- `configVersion` in target file
+- schema id/version in schema files
+
+Optional guard (`bundle_version.json`):
+
+- Not required for runtime behavior.
+- Only useful as a copy/sync stamp when manually copying GUI bundle files into app repos.
+- Value: quick drift detection ("is this app repo using the expected GUI bundle build?").
+
+If you do not want a separate bundle file, that is valid. Keep versioning in `config/gui` + schema only.
 
 ## Root Config
 
@@ -121,7 +164,7 @@ Target shape:
   - `name`, `label`, `cwd`, `cmd[]`
   - `timeoutSeconds`, `confirm`, `showOutputPanel`, `mutex`, `detached`
 - `ui.tabs[].widgets[]`
-  - widget types: `kv`, `table`, `log`, `button`
+  - widget types: `kv`, `table`, `log`, `button`, `profile_select`, `action_map`
 - `actionOutput.maxLines`, `actionOutput.maxBytes` (optional)
 
 ## Runtime Semantics
@@ -162,3 +205,27 @@ Supported subset:
 - `$.arr[0].k`
 
 Missing paths return `None`, rendered as `-`.
+
+## Status Payload Contract
+
+Current model:
+
+- The status payload contract is implicit in app target files:
+  - widgets reference `jsonpath` keys
+  - status command output must provide those keys
+
+What is strict today:
+
+- target file structure is schema-validated (`monitor.target.v2.schema.json`)
+- command/action/log definitions are schema-validated
+
+What is not strict yet:
+
+- per-app status JSON field schema is not enforced by a dedicated JSON schema file in this repo.
+
+Recommended next step (optional):
+
+- Add app-owned status schemas in each app repo, for example:
+  - `config/gui/status.fixture.schema.json`
+  - `config/gui/status.bridge.schema.json`
+- Validate status command output against those schemas before rendering.

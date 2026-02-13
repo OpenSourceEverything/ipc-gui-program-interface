@@ -4,6 +4,72 @@
   "title": "Monitor Target Config v2",
   "type": "object",
   "additionalProperties": false,
+  "$defs": {
+    "widget": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "kv",
+            "table",
+            "log",
+            "button",
+            "profile_select",
+            "action_map",
+            "action_select",
+            "file_view"
+          ]
+        }
+      }
+    },
+    "tab": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "widgets"
+          ]
+        },
+        {
+          "required": [
+            "children"
+          ]
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "widgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/widget"
+          }
+        },
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tab"
+          }
+        }
+      }
+    }
+  },
   "required": [
     "configVersion",
     "id",
@@ -160,43 +226,7 @@
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "id",
-              "title",
-              "widgets"
-            ],
-            "properties": {
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "title": {
-                "type": "string",
-                "minLength": 1
-              },
-              "widgets": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "required": [
-                    "type"
-                  ],
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "enum": [
-                        "kv",
-                        "table",
-                        "log",
-                        "button"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
+            "$ref": "#/$defs/tab"
           }
         }
       }

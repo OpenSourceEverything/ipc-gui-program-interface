@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bridge-repo", default=str(DEFAULT_BRIDGE_REPO))
     parser.add_argument("--fixture-target", default="")
     parser.add_argument("--bridge-target", default="")
+    parser.add_argument(
+        "--include-fixture",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include fixture target in generated monitor config.",
+    )
+    parser.add_argument(
+        "--include-bridge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include bridge target in generated monitor config.",
+    )
     parser.add_argument("--config-out", default="monitor_config.generated.json")
     parser.add_argument("--refresh-seconds", type=float, default=1.0)
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
@@ -56,7 +68,16 @@ def main() -> int:
         else resolve_target_file(Path(args.bridge_repo), "monitor.bridge.target.json")
     )
 
-    missing = [str(path) for path in (fixture_target, bridge_target) if not path.exists()]
+    include_files: list[Path] = []
+    if args.include_fixture:
+        include_files.append(fixture_target)
+    if args.include_bridge:
+        include_files.append(bridge_target)
+    if not include_files:
+        print("No targets selected. Use --include-fixture and/or --include-bridge.", file=sys.stderr)
+        return 2
+
+    missing = [str(path) for path in include_files if not path.exists()]
     if missing:
         for item in missing:
             print(f"missing target config: {item}", file=sys.stderr)
@@ -68,7 +89,7 @@ def main() -> int:
     config_out.parent.mkdir(parents=True, exist_ok=True)
 
     payload = build_root_config(
-        include_files=[fixture_target, bridge_target],
+        include_files=include_files,
         refresh=args.refresh_seconds,
         timeout=args.timeout_seconds,
     )
@@ -90,4 +111,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

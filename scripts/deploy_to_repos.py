@@ -72,16 +72,23 @@ def main() -> int:
         print(f"missing launcher: {launcher}", file=sys.stderr)
         return 2
 
+    argv = list(sys.argv[1:])
+    include_bridge = False
+    if "--with-bridge" in argv:
+        include_bridge = True
+        argv.remove("--with-bridge")
+
     bridge_repo = os.getenv("BRIDGE_REPO", r"C:\\repos\\test-fixture-data-bridge")
     cmd = [
         sys.executable,
         str(launcher),
         "--fixture-repo",
         str(repo_root),
-        "--bridge-repo",
-        str(bridge_repo),
+        "--no-include-bridge",
     ]
-    cmd.extend(sys.argv[1:])
+    if include_bridge:
+        cmd.extend(["--bridge-repo", str(bridge_repo), "--include-bridge"])
+    cmd.extend(argv)
     return subprocess.call(cmd, cwd=gui_root)
 
 if __name__ == "__main__":
@@ -105,16 +112,23 @@ def main() -> int:
         print(f"missing launcher: {launcher}", file=sys.stderr)
         return 2
 
+    argv = list(sys.argv[1:])
+    include_fixture = False
+    if "--with-fixture" in argv:
+        include_fixture = True
+        argv.remove("--with-fixture")
+
     fixture_repo = os.getenv("FIXTURE_REPO", r"\\\\H3FT06-40318\\c\\40318-SOFT")
     cmd = [
         sys.executable,
         str(launcher),
-        "--fixture-repo",
-        str(fixture_repo),
         "--bridge-repo",
         str(repo_root),
+        "--no-include-fixture",
     ]
-    cmd.extend(sys.argv[1:])
+    if include_fixture:
+        cmd.extend(["--fixture-repo", str(fixture_repo), "--include-fixture"])
+    cmd.extend(argv)
     return subprocess.call(cmd, cwd=gui_root)
 
 if __name__ == "__main__":

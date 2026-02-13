@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
+import re
 import subprocess
 import threading
 import time
@@ -100,14 +102,71 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
         return
 
     if widget_type == "log":
-        _assert_allowed_keys(widget, {"type", "title", "stream"}, context)
+        _assert_allowed_keys(
+            widget,
+            {"type", "title", "stream", "showPath", "openPathButton", "copyPathButton"},
+            context,
+        )
         return
 
     if widget_type == "button":
         _assert_allowed_keys(widget, {"type", "label", "action"}, context)
         return
 
+    if widget_type == "profile_select":
+        _assert_allowed_keys(
+            widget,
+            {"type", "title", "action", "optionsJsonpath", "currentJsonpath", "emptyLabel", "applyLabel"},
+            context,
+        )
+        return
+
+    if widget_type == "action_map":
+        _assert_allowed_keys(widget, {"type", "title", "includeCommands", "showActionName", "includePrefix"}, context)
+        return
+
+    if widget_type == "action_select":
+        _assert_allowed_keys(
+            widget,
+            {"type", "title", "includePrefix", "includeRegex", "emptyLabel", "runLabel", "showCommand"},
+            context,
+        )
+        return
+
+    if widget_type == "file_view":
+        _assert_allowed_keys(
+            widget,
+            {"type", "title", "pathJsonpath", "pathLiteral", "maxBytes", "encoding"},
+            context,
+        )
+        return
+
     raise ValueError(f"{context} has unsupported widget type '{widget_type or '(blank)'}'.")
+
+
+def _validate_v2_tab(tab: dict[str, Any], source_path: Path, context: str) -> None:
+    _assert_allowed_keys(tab, {"id", "title", "widgets", "children"}, f"{context} in {source_path}")
+    widgets = tab.get("widgets")
+    children = tab.get("children")
+
+    if widgets is None and children is None:
+        raise ValueError(f"{context} in {source_path} must define widgets or children.")
+
+    if widgets is not None:
+        if not isinstance(widgets, list):
+            raise ValueError(f"{context}.widgets in {source_path} must be a list.")
+        for widget_index, widget in enumerate(widgets, 1):
+            if not isinstance(widget, dict):
+                raise ValueError(f"{context}.widgets[{widget_index}] in {source_path} must be an object.")
+            _validate_v2_widget(widget, f"{context}.widgets[{widget_index}] in {source_path}")
+
+    if children is not None:
+        if not isinstance(children, list):
+            raise ValueError(f"{context}.children in {source_path} must be a list.")
+        for child_index, child in enumerate(children, 1):
+            if not isinstance(child, dict):
+                raise ValueError(f"{context}.children[{child_index}] in {source_path} must be an object.")
+            _validate_v2_tab(child, source_path, f"{context}.children[{child_index}]")
 
 
 def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, context: str) -> None:
@@ -155,15 +214,7 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
     for tab_index, tab in enumerate(tabs, 1):
         if not isinstance(tab, dict):
             raise ValueError(f"{context}.ui.tabs[{tab_index}] in {source_path} must be an object.")
-        tab_context = f"{context}.ui.tabs[{tab_index}]"
-        _assert_allowed_keys(tab, {"id", "title", "widgets"}, f"{tab_context} in {source_path}")
-        widgets = tab.get("widgets")
-        if not isinstance(widgets, list):
-            raise ValueError(f"{tab_context}.widgets in {source_path} must be a list.")
-        for widget_index, widget in enumerate(widgets, 1):
-            if not isinstance(widget, dict):
-                raise ValueError(f"{tab_context}.widgets[{widget_index}] in {source_path} must be an object.")
-            _validate_v2_widget(widget, f"{tab_context}.widgets[{widget_index}] in {source_path}")
+        _validate_v2_tab(tab, source_path, f"{context}.ui.tabs[{tab_index}]")
 
     action_output = target.get("actionOutput")
     if action_output is not None:
@@ -754,7 +805,7 @@ class ActionOutputBuffer:
         self._total_bytes = 0
         self._lock = threading.Lock()
 
-    def append(self, stream: str, text: str) -> str:
+    def append(self, stream: str, text: str) -> tuple[str, str]:
         line = f"[{stream}] {text}".rstrip("\r\n")
         size = len(line.encode("utf-8", errors="ignore")) + 1
         with self._lock:
@@ -763,11 +814,16 @@ class ActionOutputBuffer:
             while self._lines and (len(self._lines) > self.max_lines or self._total_bytes > self.max_bytes):
                 removed_size, _ = self._lines.popleft()
                 self._total_bytes -= removed_size
-            return "\n".join(item for _, item in self._lines)
+            return "\n".join(item for _, item in self._lines), line
 
     def snapshot(self) -> str:
         with self._lock:
             return "\n".join(item for _, item in self._lines)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._lines.clear()
+            self._total_bytes = 0
 
 
 class LogTailWorker(threading.Thread):
@@ -875,7 +931,9 @@ class LogTailWorker(threading.Thread):
         self._last_render_key = render_key
         self.app.root.after(
             0,
-            lambda tid=self.target_id, stream=self.stream, text=render: self.app._apply_log_render(tid, stream, text),
+            lambda tid=self.target_id, stream=self.stream, text=render, active=header_path: self.app._apply_log_render(
+                tid, stream, text, active
+            ),
         )
 
 
@@ -928,30 +986,48 @@ class MonitorApp:
                 "target": target,
                 "bannerVar": banner_var,
                 "bindings": [],
+                "profileSelectors": [],
+                "fileViewers": [],
                 "logWidgetsByStream": {},
                 "actionOutputWidget": None,
+                "actionOutputPath": None,
                 "lastGoodStatus": {},
                 "lastStatusError": None,
                 "nextRefreshAt": 0.0,
+                "tabsWidget": tabs,
+                "actionOutputTab": None,
             }
             self.target_runtime[tid] = runtime
 
             ui = target.get("ui") if isinstance(target.get("ui"), dict) else {}
             ui_tabs = ui.get("tabs") if isinstance(ui.get("tabs"), list) else []
-            for tab in ui_tabs:
-                if not isinstance(tab, dict):
-                    continue
-                tab_frame = ttk.Frame(tabs)
-                tabs.add(tab_frame, text=str(tab.get("title") or tab.get("id") or "Tab"))
-                widgets = tab.get("widgets")
-                if not isinstance(widgets, list):
-                    continue
-                self._build_widgets(tab_frame, runtime, widgets)
+            self._build_tabs(tabs, runtime, ui_tabs)
 
             action_output_tab = ttk.Frame(tabs)
             tabs.add(action_output_tab, text="Action Output")
+            runtime["actionOutputTab"] = action_output_tab
+            action_output_root = self.config_path.parent / "action-output"
+            action_output_root.mkdir(parents=True, exist_ok=True)
+            action_output_path = (action_output_root / f"{tid}.log").resolve()
+            runtime["actionOutputPath"] = action_output_path
+
+            toolbar = ttk.Frame(action_output_tab)
+            toolbar.pack(fill=tk.X, padx=6, pady=(6, 2))
+            action_output_path_var = tk.StringVar(value=str(action_output_path))
+            ttk.Label(toolbar, text="Source:").pack(side=tk.LEFT)
+            ttk.Label(toolbar, textvariable=action_output_path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+            ttk.Button(toolbar, text="Open", command=lambda var=action_output_path_var: self._open_file_path(var.get())).pack(
+                side=tk.RIGHT, padx=(6, 0)
+            )
+            ttk.Button(toolbar, text="Copy", command=lambda var=action_output_path_var: self._copy_to_clipboard(var.get())).pack(
+                side=tk.RIGHT
+            )
+            ttk.Button(toolbar, text="Clear", command=lambda target_id=tid: self._clear_action_output(target_id)).pack(
+                side=tk.RIGHT, padx=(0, 6)
+            )
+
             action_text = tk.Text(action_output_tab, wrap=tk.NONE, height=10)
-            action_text.pack(fill=tk.BOTH, expand=True)
+            action_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
             runtime["actionOutputWidget"] = action_text
             action_output_cfg = target.get("actionOutput") if isinstance(target.get("actionOutput"), dict) else {}
             runtime["actionOutputBuffer"] = ActionOutputBuffer(
@@ -966,25 +1042,114 @@ class MonitorApp:
         ttk.Button(footer, text="Refresh Now", command=self._refresh_async).pack(side=tk.RIGHT)
 
     def _build_widgets(self, parent: ttk.Frame, runtime: dict[str, Any], widgets: list[dict[str, Any]]) -> None:
-        for widget in widgets:
-            if not isinstance(widget, dict):
-                continue
-            widget_type = str(widget.get("type") or "").strip().lower()
-            if widget_type == "kv":
-                self._build_widget_kv(parent, runtime, widget)
-                continue
-            if widget_type == "table":
-                self._build_widget_table(parent, runtime, widget)
-                continue
-            if widget_type == "log":
-                self._build_widget_log(parent, runtime, widget)
-                continue
-            if widget_type == "button":
-                self._build_widget_button(parent, runtime, widget)
-                continue
+        widget_items = [item for item in widgets if isinstance(item, dict)]
+        if not widget_items:
+            return
 
-            unknown = ttk.Label(parent, text=f"Unsupported widget type: {widget_type or '(blank)'}")
-            unknown.pack(fill=tk.X, padx=8, pady=4)
+        if len(widget_items) == 1:
+            for widget in widget_items:
+                self._build_one_widget(parent, runtime, widget)
+            return
+
+        splitter_widget_types = {"log", "action_map", "file_view"}
+        uses_splitter = any(str(item.get("type") or "").strip().lower() in splitter_widget_types for item in widget_items)
+        if uses_splitter:
+            pane = ttk.Panedwindow(parent, orient=tk.VERTICAL)
+            pane.pack(fill=tk.BOTH, expand=True)
+            for widget in widget_items:
+                slot = ttk.Frame(pane)
+                pane.add(slot, weight=1)
+                self._build_one_widget(slot, runtime, widget)
+            return
+
+        index = 0
+        while index < len(widget_items):
+            current = widget_items[index]
+            current_type = str(current.get("type") or "").strip().lower()
+            if current_type == "profile_select" and index + 1 < len(widget_items):
+                next_widget = widget_items[index + 1]
+                next_type = str(next_widget.get("type") or "").strip().lower()
+                if next_type == "profile_select":
+                    row = ttk.Frame(parent)
+                    row.pack(fill=tk.X)
+                    left = ttk.Frame(row)
+                    left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    right = ttk.Frame(row)
+                    right.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    self._build_one_widget(left, runtime, current)
+                    self._build_one_widget(right, runtime, next_widget)
+                    index += 2
+                    continue
+            self._build_one_widget(parent, runtime, current)
+            index += 1
+
+    def _build_tabs(self, tabs_widget: ttk.Notebook, runtime: dict[str, Any], tabs: list[dict[str, Any]]) -> None:
+        for tab in tabs:
+            if not isinstance(tab, dict):
+                continue
+            self._build_single_tab(tabs_widget, runtime, tab)
+
+    def _build_single_tab(self, tabs_widget: ttk.Notebook, runtime: dict[str, Any], tab: dict[str, Any]) -> None:
+        tab_frame = ttk.Frame(tabs_widget)
+        tabs_widget.add(tab_frame, text=str(tab.get("title") or tab.get("id") or "Tab"))
+        widgets = tab.get("widgets") if isinstance(tab.get("widgets"), list) else []
+        children = tab.get("children") if isinstance(tab.get("children"), list) else []
+
+        if widgets and children:
+            split = ttk.Panedwindow(tab_frame, orient=tk.VERTICAL)
+            split.pack(fill=tk.BOTH, expand=True, padx=4, pady=6)
+            widgets_slot = ttk.Frame(split)
+            split.add(widgets_slot, weight=1)
+            self._build_widgets(widgets_slot, runtime, widgets)
+
+            child_slot = ttk.Frame(split)
+            split.add(child_slot, weight=1)
+            child_tabs = ttk.Notebook(child_slot)
+            child_tabs.pack(fill=tk.BOTH, expand=True)
+            self._build_tabs(child_tabs, runtime, children)
+            return
+
+        if widgets:
+            self._build_widgets(tab_frame, runtime, widgets)
+            return
+
+        if children:
+            child_tabs = ttk.Notebook(tab_frame)
+            child_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=6)
+            self._build_tabs(child_tabs, runtime, children)
+            return
+
+        ttk.Label(tab_frame, text="No widgets configured.").pack(fill=tk.X, padx=8, pady=8)
+
+    def _build_one_widget(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        widget_type = str(widget.get("type") or "").strip().lower()
+        if widget_type == "kv":
+            self._build_widget_kv(parent, runtime, widget)
+            return
+        if widget_type == "table":
+            self._build_widget_table(parent, runtime, widget)
+            return
+        if widget_type == "log":
+            self._build_widget_log(parent, runtime, widget)
+            return
+        if widget_type == "button":
+            self._build_widget_button(parent, runtime, widget)
+            return
+        if widget_type == "profile_select":
+            self._build_widget_profile_select(parent, runtime, widget)
+            return
+        if widget_type == "action_map":
+            self._build_widget_action_map(parent, runtime, widget)
+            return
+        if widget_type == "action_select":
+            self._build_widget_action_select(parent, runtime, widget)
+            return
+        if widget_type == "file_view":
+            self._build_widget_file_view(parent, runtime, widget)
+            return
+
+        unknown = ttk.Label(parent, text=f"Unsupported widget type: {widget_type or '(blank)'}")
+        unknown.pack(fill=tk.X, padx=8, pady=4)
 
     def _build_widget_kv(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Values"))
@@ -1021,11 +1186,28 @@ class MonitorApp:
     def _build_widget_log(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or widget.get("stream") or "Log"))
         frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        show_path = bool(widget.get("showPath", True))
+        open_path_button = bool(widget.get("openPathButton", True))
+        copy_path_button = bool(widget.get("copyPathButton", True))
+        path_var = tk.StringVar(value="-")
+        if show_path:
+            toolbar = ttk.Frame(frame)
+            toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+            ttk.Label(toolbar, text="File:").pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Label(toolbar, textvariable=path_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            if open_path_button:
+                ttk.Button(toolbar, text="Open", command=lambda var=path_var: self._open_file_path(var.get())).pack(
+                    side=tk.RIGHT, padx=(6, 0)
+                )
+            if copy_path_button:
+                ttk.Button(toolbar, text="Copy", command=lambda var=path_var: self._copy_to_clipboard(var.get())).pack(
+                    side=tk.RIGHT
+                )
         text = tk.Text(frame, wrap=tk.NONE, height=14)
-        text.pack(fill=tk.BOTH, expand=True)
+        text.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
         stream = str(widget.get("stream") or "").strip()
         if stream:
-            runtime["logWidgetsByStream"].setdefault(stream, []).append(text)
+            runtime["logWidgetsByStream"].setdefault(stream, []).append({"text": text, "pathVar": path_var})
 
     def _build_widget_button(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.Frame(parent)
@@ -1036,6 +1218,267 @@ class MonitorApp:
         target_id = str(target.get("id") or "")
         button = ttk.Button(frame, text=label, command=lambda: self._invoke_action(target_id, action_name))
         button.pack(side=tk.LEFT)
+
+    def _build_widget_profile_select(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Profile"))
+        frame.pack(fill=tk.X, padx=8, pady=6, anchor="n")
+        options_path = str(widget.get("optionsJsonpath") or "")
+        current_path = str(widget.get("currentJsonpath") or "")
+        action_name = str(widget.get("action") or "").strip()
+        empty_label = str(widget.get("emptyLabel") or "Select profile")
+        apply_label = str(widget.get("applyLabel") or "Apply")
+
+        row = ttk.Frame(frame)
+        row.pack(fill=tk.X, padx=8, pady=6)
+        current_var = tk.StringVar(value="-")
+        ttk.Label(row, text="Current:").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(row, textvariable=current_var).pack(side=tk.LEFT, padx=(0, 12))
+
+        selected_var = tk.StringVar(value="")
+        combo = ttk.Combobox(row, textvariable=selected_var, state="readonly", width=24)
+        combo.pack(side=tk.LEFT, padx=(0, 8))
+        combo["values"] = [empty_label]
+        combo.set(empty_label)
+
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+
+        def apply_selected() -> None:
+            selected = str(selected_var.get() or "").strip()
+            if not selected or selected == empty_label:
+                self.console_var.set("No profile selected.")
+                return
+            self._invoke_action(target_id, action_name, selected)
+
+        ttk.Button(row, text=apply_label, command=apply_selected).pack(side=tk.LEFT)
+        runtime["profileSelectors"].append(
+            {
+                "optionsPath": options_path,
+                "currentPath": current_path,
+                "emptyLabel": empty_label,
+                "selectedVar": selected_var,
+                "currentVar": current_var,
+                "combo": combo,
+            }
+        )
+
+    def _build_widget_action_map(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Commands"))
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        include_commands = bool(widget.get("includeCommands", True))
+        show_action_name = bool(widget.get("showActionName", True))
+        include_prefix = str(widget.get("includePrefix") or "").strip()
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        actions = target.get("actions") if isinstance(target.get("actions"), list) else []
+
+        text = tk.Text(frame, wrap=tk.NONE, height=12)
+        text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        lines: list[str] = []
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if include_prefix and not name.startswith(include_prefix):
+                continue
+            label = str(item.get("label") or name).strip()
+            cmd = _normalize_cmd(item.get("cmd"))
+            head = label
+            if show_action_name and name:
+                head = f"{label} ({name})"
+            lines.append(head)
+            if include_commands and cmd:
+                lines.append("  " + " ".join(cmd))
+            lines.append("")
+        render = "\n".join(lines).strip() or "(no actions configured)"
+        text.insert(tk.END, render + "\n")
+        text.configure(state=tk.DISABLED)
+
+    def _build_widget_action_select(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Select Action"))
+        frame.pack(fill=tk.X, padx=8, pady=6, anchor="n")
+        include_prefix = str(widget.get("includePrefix") or "").strip()
+        include_regex = str(widget.get("includeRegex") or "").strip()
+        empty_label = str(widget.get("emptyLabel") or "Select action")
+        run_label = str(widget.get("runLabel") or "Run")
+        show_command = bool(widget.get("showCommand", True))
+
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+        actions = target.get("actions") if isinstance(target.get("actions"), list) else []
+        matcher = re.compile(include_regex) if include_regex else None
+        eligible: list[dict[str, Any]] = []
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if include_prefix and not name.startswith(include_prefix):
+                continue
+            if matcher and matcher.search(name) is None:
+                continue
+            eligible.append(item)
+
+        label_to_name: dict[str, str] = {}
+        options: list[str] = []
+        for item in eligible:
+            name = str(item.get("name") or "").strip()
+            label = str(item.get("label") or name).strip()
+            display = f"{label} ({name})" if name else label
+            options.append(display)
+            label_to_name[display] = name
+
+        row = ttk.Frame(frame)
+        row.pack(fill=tk.X, padx=8, pady=6)
+        selected_var = tk.StringVar(value=empty_label)
+        combo = ttk.Combobox(row, textvariable=selected_var, state="readonly", width=50)
+        combo["values"] = options if options else [empty_label]
+        combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        combo.set(empty_label if not options else options[0])
+        if options:
+            selected_var.set(options[0])
+
+        def run_selected() -> None:
+            selected = str(selected_var.get() or "").strip()
+            action_name = label_to_name.get(selected, "")
+            if not action_name:
+                self.console_var.set("No action selected.")
+                return
+            self._invoke_action(target_id, action_name)
+
+        ttk.Button(row, text=run_label, command=run_selected).pack(side=tk.LEFT, padx=(8, 0))
+        if show_command:
+            command_var = tk.StringVar(value="")
+            ttk.Label(frame, textvariable=command_var).pack(fill=tk.X, padx=8, pady=(0, 6))
+
+            def update_preview(*_: Any) -> None:
+                selected = str(selected_var.get() or "").strip()
+                action_name = label_to_name.get(selected, "")
+                action = next((item for item in eligible if str(item.get("name") or "") == action_name), None)
+                if not isinstance(action, dict):
+                    command_var.set("-")
+                    return
+                cmd = _normalize_cmd(action.get("cmd"))
+                command_var.set(" ".join(cmd) if cmd else "-")
+
+            selected_var.trace_add("write", update_preview)
+            update_preview()
+
+    def _build_widget_file_view(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "File"))
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+
+        path_var = tk.StringVar(value="-")
+        toolbar = ttk.Frame(frame)
+        toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Label(toolbar, text="Path:").pack(side=tk.LEFT)
+        ttk.Label(toolbar, textvariable=path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        ttk.Button(toolbar, text="Open", command=lambda var=path_var: self._open_file_path(var.get())).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(toolbar, text="Copy", command=lambda var=path_var: self._copy_to_clipboard(var.get())).pack(
+            side=tk.RIGHT
+        )
+        text = tk.Text(frame, wrap=tk.NONE, height=16)
+        text.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
+        text.configure(state=tk.DISABLED)
+        runtime["fileViewers"].append(
+            {
+                "pathJsonpath": str(widget.get("pathJsonpath") or ""),
+                "pathLiteral": str(widget.get("pathLiteral") or ""),
+                "pathVar": path_var,
+                "textWidget": text,
+                "maxBytes": int(widget.get("maxBytes", 512000)),
+                "encoding": str(widget.get("encoding") or "utf-8"),
+                "lastSignature": None,
+            }
+        )
+
+    def _open_file_path(self, path_text: str) -> None:
+        candidate = str(path_text or "").strip()
+        if not candidate or candidate == "-":
+            self.console_var.set("No file path available.")
+            return
+        path = Path(candidate)
+        if not path.exists():
+            self.console_var.set(f"path not found: {path}")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+            self.console_var.set(f"opened: {path}")
+        except Exception as ex:
+            self.console_var.set(f"open failed: {ex}")
+
+    def _copy_to_clipboard(self, value: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            self.console_var.set("Nothing to copy.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.console_var.set("Copied to clipboard.")
+
+    def _read_file_for_view(self, path: Path, *, max_bytes: int, encoding: str) -> str:
+        if not path.exists() or not path.is_file():
+            return "(missing file)"
+        cap = max(1024, int(max_bytes))
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(cap + 1)
+        except Exception as ex:
+            return f"(read error) {ex}"
+        truncated = len(raw) > cap
+        if truncated:
+            raw = raw[:cap]
+        text = raw.decode(encoding, errors="ignore")
+        if truncated:
+            text += "\n...[truncated]"
+        return text
+
+    def _refresh_file_viewers(self, runtime: dict[str, Any], payload: dict[str, Any]) -> None:
+        viewers = runtime.get("fileViewers")
+        if not isinstance(viewers, list):
+            return
+        for viewer in viewers:
+            if not isinstance(viewer, dict):
+                continue
+            path_json = str(viewer.get("pathJsonpath") or "").strip()
+            path_literal = str(viewer.get("pathLiteral") or "").strip()
+            path_value = path_literal
+            if path_json:
+                resolved = json_path_get(payload, path_json)
+                if resolved is not None:
+                    path_value = str(resolved)
+            path_var = viewer.get("pathVar")
+            if isinstance(path_var, tk.StringVar):
+                path_var.set(path_value or "-")
+            widget = viewer.get("textWidget")
+            if not isinstance(widget, tk.Text):
+                continue
+            path_obj = Path(path_value) if path_value else None
+            signature = None
+            if path_obj is not None and path_obj.exists() and path_obj.is_file():
+                try:
+                    stat = path_obj.stat()
+                    signature = (str(path_obj), int(stat.st_mtime_ns), int(stat.st_size))
+                except Exception:
+                    signature = (str(path_obj), 0, 0)
+            if signature == viewer.get("lastSignature"):
+                continue
+            viewer["lastSignature"] = signature
+            if path_obj is None:
+                content = "(no path)"
+            else:
+                content = self._read_file_for_view(
+                    path_obj,
+                    max_bytes=int(viewer.get("maxBytes", 512000)),
+                    encoding=str(viewer.get("encoding") or "utf-8"),
+                )
+            widget.configure(state=tk.NORMAL)
+            widget.delete("1.0", tk.END)
+            widget.insert(tk.END, content + "\n")
+            widget.configure(state=tk.DISABLED)
 
     def _start_log_workers(self) -> None:
         for target in self.targets:
@@ -1154,12 +1597,34 @@ class MonitorApp:
         status_payload = runtime.get("lastGoodStatus")
         payload = status_payload if isinstance(status_payload, dict) else {}
         bindings = list(runtime.get("bindings") or [])
+        profile_selectors = list(runtime.get("profileSelectors") or [])
         error_obj = runtime.get("lastStatusError")
 
         def update() -> None:
             for path, var in bindings:
                 value = json_path_get(payload, str(path))
                 var.set(render_value(value))
+            for selector in profile_selectors:
+                if not isinstance(selector, dict):
+                    continue
+                options_path = str(selector.get("optionsPath") or "")
+                current_path = str(selector.get("currentPath") or "")
+                options_raw = json_path_get(payload, options_path)
+                options = [str(item) for item in options_raw] if isinstance(options_raw, list) else []
+                combo = selector.get("combo")
+                empty_label = str(selector.get("emptyLabel") or "Select profile")
+                if isinstance(combo, ttk.Combobox):
+                    combo["values"] = options if options else [empty_label]
+                current_value = json_path_get(payload, current_path)
+                current_text = str(current_value) if current_value is not None else "-"
+                current_var = selector.get("currentVar")
+                if isinstance(current_var, tk.StringVar):
+                    current_var.set(current_text)
+                selected_var = selector.get("selectedVar")
+                if isinstance(selected_var, tk.StringVar) and options:
+                    selected = str(selected_var.get() or "").strip()
+                    if (not selected or selected == empty_label) and current_text in options:
+                        selected_var.set(current_text)
             banner_var = runtime.get("bannerVar")
             if isinstance(banner_var, tk.StringVar):
                 if isinstance(error_obj, dict):
@@ -1168,10 +1633,11 @@ class MonitorApp:
                     banner_var.set(f"[{ts}] {msg}")
                 else:
                     banner_var.set("")
+            self._refresh_file_viewers(runtime, payload)
 
         self.root.after(0, update)
 
-    def _apply_log_render(self, target_id: str, stream: str, content: str) -> None:
+    def _apply_log_render(self, target_id: str, stream: str, content: str, active_path: str) -> None:
         runtime = self.target_runtime.get(target_id)
         if runtime is None:
             return
@@ -1181,14 +1647,25 @@ class MonitorApp:
         stream_widgets = widgets.get(stream)
         if not isinstance(stream_widgets, list):
             return
-        for widget in stream_widgets:
+        for widget_entry in stream_widgets:
+            widget = None
+            path_var = None
+            if isinstance(widget_entry, dict):
+                widget = widget_entry.get("text")
+                path_var = widget_entry.get("pathVar")
+            elif isinstance(widget_entry, tk.Text):
+                widget = widget_entry
+            if not isinstance(widget, tk.Text):
+                continue
             widget.delete("1.0", tk.END)
             if content:
                 widget.insert(tk.END, content + "\n")
             else:
                 widget.insert(tk.END, "(no data)\n")
+            if isinstance(path_var, tk.StringVar):
+                path_var.set(active_path or "-")
 
-    def _invoke_action(self, target_id: str, action_name: str) -> None:
+    def _invoke_action(self, target_id: str, action_name: str, action_value: str | None = None) -> None:
         runtime = self.target_runtime.get(target_id)
         if runtime is None:
             return
@@ -1208,10 +1685,18 @@ class MonitorApp:
         if confirm_text and not messagebox.askyesno("Confirm Action", confirm_text):
             return
 
-        thread = threading.Thread(target=self._run_action, args=(target_id, action), daemon=True)
+        tabs_widget = runtime.get("tabsWidget")
+        action_output_tab = runtime.get("actionOutputTab")
+        if isinstance(tabs_widget, ttk.Notebook) and isinstance(action_output_tab, ttk.Frame):
+            try:
+                tabs_widget.select(action_output_tab)
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=self._run_action, args=(target_id, action, action_value), daemon=True)
         thread.start()
 
-    def _run_action(self, target_id: str, action: dict[str, Any]) -> None:
+    def _run_action(self, target_id: str, action: dict[str, Any], action_value: str | None = None) -> None:
         action_name = str(action.get("name") or "")
         action_label = str(action.get("label") or action_name)
         mutex_name = str(action.get("mutex") or "").strip()
@@ -1223,11 +1708,15 @@ class MonitorApp:
             lock.acquire()
         try:
             cmd = _normalize_cmd(action.get("cmd"))
+            if action_value is not None:
+                cmd = [part.replace("{value}", str(action_value)) for part in cmd]
             if not cmd:
                 self._append_action_output(target_id, "system", f"{action_label}: empty command")
                 return
 
             cwd_text = str(action.get("cwd") or "").strip()
+            if action_value is not None and cwd_text:
+                cwd_text = cwd_text.replace("{value}", str(action_value))
             cwd = Path(cwd_text) if cwd_text else None
             timeout_seconds = float(action.get("timeoutSeconds") or 120.0)
             detached = bool(action.get("detached", False))
@@ -1312,7 +1801,15 @@ class MonitorApp:
         buffer = runtime.get("actionOutputBuffer")
         if not isinstance(buffer, ActionOutputBuffer):
             return
-        snapshot = buffer.append(stream, text)
+        snapshot, line = buffer.append(stream, text)
+        output_path = runtime.get("actionOutputPath")
+        if isinstance(output_path, Path):
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                with output_path.open("a", encoding="utf-8") as handle:
+                    handle.write(line + "\n")
+            except Exception:
+                pass
         widget = runtime.get("actionOutputWidget")
         if not isinstance(widget, tk.Text):
             return
@@ -1323,6 +1820,25 @@ class MonitorApp:
             widget.see(tk.END)
 
         self.root.after(0, update)
+
+    def _clear_action_output(self, target_id: str) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if runtime is None:
+            return
+        buffer = runtime.get("actionOutputBuffer")
+        if isinstance(buffer, ActionOutputBuffer):
+            buffer.clear()
+        output_path = runtime.get("actionOutputPath")
+        if isinstance(output_path, Path):
+            try:
+                output_path.write_text("", encoding="utf-8")
+            except Exception:
+                pass
+        widget = runtime.get("actionOutputWidget")
+        if isinstance(widget, tk.Text):
+            widget.delete("1.0", tk.END)
+            widget.insert(tk.END, "(cleared)\n")
+        self.console_var.set("Action output cleared.")
 
     def _on_close(self) -> None:
         self.stop_event.set()
