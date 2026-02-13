@@ -1,0 +1,161 @@
+{
+  "$schema": "./schemas/monitor.target.v2.schema.json",
+  "configVersion": 2,
+  "id": "bridge",
+  "title": "Bridge",
+  "refreshSeconds": 1.0,
+  "status": {
+    "cwd": "C:\\repos\\test-fixture-data-bridge",
+    "cmd": [
+      "python",
+      "dev",
+      "status",
+      "--once",
+      "--json"
+    ],
+    "timeoutSeconds": 10.0
+  },
+  "logs": [
+    {
+      "stream": "bridge.out",
+      "title": "Bridge Runtime",
+      "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\dev\\realtime-pair-*\\bridge.out.log",
+      "tailLines": 400,
+      "maxLineBytes": 4096,
+      "pollMs": 300,
+      "encoding": "utf-8",
+      "allowMissing": true
+    },
+    {
+      "stream": "bridge.service",
+      "title": "Bridge Service",
+      "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\service\\db-bridge-live-*.log",
+      "tailLines": 400,
+      "maxLineBytes": 4096,
+      "pollMs": 300,
+      "encoding": "utf-8",
+      "allowMissing": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "validate_contract",
+      "label": "Validate Contract",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "validate-contract"
+      ],
+      "timeoutSeconds": 120.0,
+      "confirm": "Run contract validation now?",
+      "showOutputPanel": true
+    },
+    {
+      "name": "db_counts",
+      "label": "DB Counts",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "db",
+        "counts",
+        "--target",
+        "sim"
+      ],
+      "timeoutSeconds": 30.0,
+      "showOutputPanel": true,
+      "mutex": "bridge-db"
+    }
+  ],
+  "ui": {
+    "tabs": [
+      {
+        "id": "status",
+        "title": "Status",
+        "widgets": [
+          {
+            "type": "kv",
+            "title": "Bridge Core",
+            "items": [
+              {
+                "label": "Process Running",
+                "jsonpath": "$.processRunning"
+              },
+              {
+                "label": "Transport Mode",
+                "jsonpath": "$.transportMode"
+              },
+              {
+                "label": "Receiver Mode",
+                "jsonpath": "$.receiverMode"
+              },
+              {
+                "label": "Health State",
+                "jsonpath": "$.healthState"
+              }
+            ]
+          },
+          {
+            "type": "table",
+            "title": "DB Summary",
+            "columns": [
+              {
+                "label": "Ingest Rows",
+                "jsonpath": "$.dbIngestRows"
+              },
+              {
+                "label": "Run Comm Stats",
+                "jsonpath": "$.dbRunCommStatsRows"
+              },
+              {
+                "label": "Last Received",
+                "jsonpath": "$.dbLastReceivedAt"
+              },
+              {
+                "label": "Query State",
+                "jsonpath": "$.dbQueryState"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "logs",
+        "title": "Logs",
+        "widgets": [
+          {
+            "type": "log",
+            "title": "Bridge Runtime",
+            "stream": "bridge.out"
+          },
+          {
+            "type": "log",
+            "title": "Bridge Service",
+            "stream": "bridge.service"
+          }
+        ]
+      },
+      {
+        "id": "actions",
+        "title": "Actions",
+        "widgets": [
+          {
+            "type": "button",
+            "label": "Validate Contract",
+            "action": "validate_contract"
+          },
+          {
+            "type": "button",
+            "label": "DB Counts",
+            "action": "db_counts"
+          }
+        ]
+      }
+    ]
+  },
+  "actionOutput": {
+    "maxLines": 1200,
+    "maxBytes": 1000000
+  }
+}
