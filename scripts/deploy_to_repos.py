@@ -138,6 +138,7 @@ def deploy_to_repo(source_root: Path, repo_root: Path, role: str, clean: bool) -
     embed_root.mkdir(parents=True, exist_ok=True)
 
     runtime_items = [
+        ".gitignore",
         "monitor.py",
         "README.md",
         "cli.schema.json",
@@ -180,4 +181,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
