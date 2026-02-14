@@ -26,6 +26,12 @@ DEFAULT_ACTION_OUTPUT_MAX_BYTES = 1_000_000
 MIN_REFRESH_TICK_SECONDS = 0.2
 
 
+def _no_window_creationflags() -> int:
+    if os.name != "nt":
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
 def _assert_allowed_keys(
     obj: dict[str, Any],
     allowed: set[str],
@@ -136,9 +142,45 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
     if widget_type == "file_view":
         _assert_allowed_keys(
             widget,
-            {"type", "title", "pathJsonpath", "pathLiteral", "maxBytes", "encoding"},
+            {"type", "title", "pathJsonpath", "pathLiteral", "maxBytes", "encoding", "showContent"},
             context,
         )
+        return
+
+    if widget_type == "config_editor":
+        _assert_allowed_keys(
+            widget,
+            {
+                "type",
+                "title",
+                "showAction",
+                "setAction",
+                "pathJsonpath",
+                "pathLiteral",
+                "pathKey",
+                "includePrefix",
+                "includeKeys",
+                "excludeKeys",
+                "settableOnly",
+                "reloadLabel",
+            },
+            context,
+        )
+        show_action = str(widget.get("showAction") or "").strip()
+        set_action = str(widget.get("setAction") or "").strip()
+        if not show_action:
+            raise ValueError(f"{context}.showAction must be a non-empty string.")
+        if not set_action:
+            raise ValueError(f"{context}.setAction must be a non-empty string.")
+        for list_key in ("includeKeys", "excludeKeys"):
+            raw_list = widget.get(list_key)
+            if raw_list is None:
+                continue
+            if not isinstance(raw_list, list):
+                raise ValueError(f"{context}.{list_key} must be a list.")
+            for item_index, item in enumerate(raw_list, 1):
+                if not str(item).strip():
+                    raise ValueError(f"{context}.{list_key}[{item_index}] must be a non-empty string.")
         return
 
     raise ValueError(f"{context} has unsupported widget type '{widget_type or '(blank)'}'.")
@@ -317,6 +359,7 @@ def run_cmd(cmd: list[str], cwd: Path | None, timeout_seconds: float) -> tuple[i
         text=True,
         capture_output=True,
         timeout=timeout_seconds,
+        creationflags=_no_window_creationflags(),
     )
     return int(completed.returncode), completed.stdout or "", completed.stderr or ""
 
@@ -988,6 +1031,7 @@ class MonitorApp:
                 "bindings": [],
                 "profileSelectors": [],
                 "fileViewers": [],
+                "configEditors": [],
                 "logWidgetsByStream": {},
                 "actionOutputWidget": None,
                 "actionOutputPath": None,
@@ -1041,48 +1085,6 @@ class MonitorApp:
         ttk.Label(footer, textvariable=self.console_var).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(footer, text="Refresh Now", command=self._refresh_async).pack(side=tk.RIGHT)
 
-    def _build_widgets(self, parent: ttk.Frame, runtime: dict[str, Any], widgets: list[dict[str, Any]]) -> None:
-        widget_items = [item for item in widgets if isinstance(item, dict)]
-        if not widget_items:
-            return
-
-        if len(widget_items) == 1:
-            for widget in widget_items:
-                self._build_one_widget(parent, runtime, widget)
-            return
-
-        splitter_widget_types = {"log", "action_map", "file_view"}
-        uses_splitter = any(str(item.get("type") or "").strip().lower() in splitter_widget_types for item in widget_items)
-        if uses_splitter:
-            pane = ttk.Panedwindow(parent, orient=tk.VERTICAL)
-            pane.pack(fill=tk.BOTH, expand=True)
-            for widget in widget_items:
-                slot = ttk.Frame(pane)
-                pane.add(slot, weight=1)
-                self._build_one_widget(slot, runtime, widget)
-            return
-
-        index = 0
-        while index < len(widget_items):
-            current = widget_items[index]
-            current_type = str(current.get("type") or "").strip().lower()
-            if current_type == "profile_select" and index + 1 < len(widget_items):
-                next_widget = widget_items[index + 1]
-                next_type = str(next_widget.get("type") or "").strip().lower()
-                if next_type == "profile_select":
-                    row = ttk.Frame(parent)
-                    row.pack(fill=tk.X)
-                    left = ttk.Frame(row)
-                    left.pack(side=tk.LEFT, fill=tk.X, expand=True)
-                    right = ttk.Frame(row)
-                    right.pack(side=tk.LEFT, fill=tk.X, expand=True)
-                    self._build_one_widget(left, runtime, current)
-                    self._build_one_widget(right, runtime, next_widget)
-                    index += 2
-                    continue
-            self._build_one_widget(parent, runtime, current)
-            index += 1
-
     def _build_tabs(self, tabs_widget: ttk.Notebook, runtime: dict[str, Any], tabs: list[dict[str, Any]]) -> None:
         for tab in tabs:
             if not isinstance(tab, dict):
@@ -1121,6 +1123,47 @@ class MonitorApp:
 
         ttk.Label(tab_frame, text="No widgets configured.").pack(fill=tk.X, padx=8, pady=8)
 
+    def _build_widgets(self, parent: ttk.Frame, runtime: dict[str, Any], widgets: list[dict[str, Any]]) -> None:
+        widget_items = [item for item in widgets if isinstance(item, dict)]
+        if not widget_items:
+            return
+
+        if len(widget_items) == 1:
+            self._build_one_widget(parent, runtime, widget_items[0])
+            return
+
+        splitter_widget_types = {"log", "action_map", "file_view", "config_editor"}
+        uses_splitter = any(str(item.get("type") or "").strip().lower() in splitter_widget_types for item in widget_items)
+        if uses_splitter:
+            pane = ttk.Panedwindow(parent, orient=tk.VERTICAL)
+            pane.pack(fill=tk.BOTH, expand=True)
+            for widget in widget_items:
+                slot = ttk.Frame(pane)
+                pane.add(slot, weight=1)
+                self._build_one_widget(slot, runtime, widget)
+            return
+
+        index = 0
+        while index < len(widget_items):
+            current = widget_items[index]
+            current_type = str(current.get("type") or "").strip().lower()
+            if current_type == "profile_select" and index + 1 < len(widget_items):
+                next_widget = widget_items[index + 1]
+                next_type = str(next_widget.get("type") or "").strip().lower()
+                if next_type == "profile_select":
+                    row = ttk.Frame(parent)
+                    row.pack(fill=tk.X)
+                    left = ttk.Frame(row)
+                    left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    right = ttk.Frame(row)
+                    right.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    self._build_one_widget(left, runtime, current)
+                    self._build_one_widget(right, runtime, next_widget)
+                    index += 2
+                    continue
+            self._build_one_widget(parent, runtime, current)
+            index += 1
+
     def _build_one_widget(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         widget_type = str(widget.get("type") or "").strip().lower()
         if widget_type == "kv":
@@ -1146,6 +1189,9 @@ class MonitorApp:
             return
         if widget_type == "file_view":
             self._build_widget_file_view(parent, runtime, widget)
+            return
+        if widget_type == "config_editor":
+            self._build_widget_config_editor(parent, runtime, widget)
             return
 
         unknown = ttk.Label(parent, text=f"Unsupported widget type: {widget_type or '(blank)'}")
@@ -1365,6 +1411,7 @@ class MonitorApp:
     def _build_widget_file_view(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "File"))
         frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        show_content = bool(widget.get("showContent", True))
 
         path_var = tk.StringVar(value="-")
         toolbar = ttk.Frame(frame)
@@ -1377,9 +1424,11 @@ class MonitorApp:
         ttk.Button(toolbar, text="Copy", command=lambda var=path_var: self._copy_to_clipboard(var.get())).pack(
             side=tk.RIGHT
         )
-        text = tk.Text(frame, wrap=tk.NONE, height=16)
-        text.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
-        text.configure(state=tk.DISABLED)
+        text: tk.Text | None = None
+        if show_content:
+            text = tk.Text(frame, wrap=tk.NONE, height=16)
+            text.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
+            text.configure(state=tk.DISABLED)
         runtime["fileViewers"].append(
             {
                 "pathJsonpath": str(widget.get("pathJsonpath") or ""),
@@ -1391,6 +1440,567 @@ class MonitorApp:
                 "lastSignature": None,
             }
         )
+
+    def _build_widget_config_editor(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Config Editor"))
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+
+        toolbar = ttk.Frame(frame)
+        toolbar.pack(fill=tk.X, padx=4, pady=(4, 2))
+
+        path_var = tk.StringVar(value="-")
+        status_var = tk.StringVar(value="Waiting for status refresh...")
+
+        ttk.Label(toolbar, text="Path:").pack(side=tk.LEFT)
+        ttk.Label(toolbar, textvariable=path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        ttk.Button(toolbar, text="Open", command=lambda var=path_var: self._open_file_path(var.get())).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(toolbar, text="Copy", command=lambda var=path_var: self._copy_to_clipboard(var.get())).pack(side=tk.RIGHT)
+
+        status_row = ttk.Frame(frame)
+        status_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(status_row, textvariable=status_var).pack(side=tk.LEFT)
+
+        table_wrap = ttk.Frame(frame)
+        table_wrap.pack(fill=tk.BOTH, expand=True, padx=4, pady=(2, 4))
+        rows_canvas = tk.Canvas(table_wrap, highlightthickness=0)
+        rows_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vertical_scroll = ttk.Scrollbar(table_wrap, orient=tk.VERTICAL, command=rows_canvas.yview)
+        vertical_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        horizontal_scroll = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=rows_canvas.xview)
+        horizontal_scroll.pack(fill=tk.X, padx=4, pady=(0, 4))
+        rows_canvas.configure(yscrollcommand=vertical_scroll.set, xscrollcommand=horizontal_scroll.set)
+
+        rows_frame = ttk.Frame(rows_canvas)
+        rows_canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+
+        def sync_scroll_region(_: Any = None) -> None:
+            try:
+                rows_canvas.configure(scrollregion=rows_canvas.bbox("all"))
+            except Exception:
+                pass
+
+        rows_frame.bind("<Configure>", sync_scroll_region)
+        rows_canvas.bind("<Configure>", sync_scroll_region)
+
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+        include_keys = widget.get("includeKeys")
+        include_keys_set = {str(item).strip() for item in include_keys} if isinstance(include_keys, list) else set()
+        include_keys_set = {item for item in include_keys_set if item}
+        exclude_keys = widget.get("excludeKeys")
+        exclude_keys_set = {str(item).strip() for item in exclude_keys} if isinstance(exclude_keys, list) else set()
+        exclude_keys_set = {item for item in exclude_keys_set if item}
+
+        editor: dict[str, Any] = {
+            "targetId": target_id,
+            "showAction": str(widget.get("showAction") or "").strip(),
+            "setAction": str(widget.get("setAction") or "").strip(),
+            "pathJsonpath": str(widget.get("pathJsonpath") or "").strip(),
+            "pathLiteral": str(widget.get("pathLiteral") or "").strip(),
+            "pathKey": str(widget.get("pathKey") or "").strip(),
+            "includePrefix": str(widget.get("includePrefix") or "").strip(),
+            "includeKeys": include_keys_set,
+            "excludeKeys": exclude_keys_set,
+            "settableOnly": bool(widget.get("settableOnly", True)),
+            "pathVar": path_var,
+            "statusVar": status_var,
+            "rowsFrame": rows_frame,
+            "rowsCanvas": rows_canvas,
+            "loading": False,
+            "needsRefresh": True,
+            "hasLoadedOnce": False,
+            "lastPathValue": "",
+            "lastEntriesSignature": None,
+            "rowState": {},
+        }
+
+        reload_label = str(widget.get("reloadLabel") or "Reload")
+        ttk.Button(
+            status_row,
+            text=reload_label,
+            command=lambda tid=target_id, item=editor: self._refresh_config_editor_async(tid, item, force=True),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        runtime["configEditors"].append(editor)
+
+    def _find_target_action(self, target: dict[str, Any], action_name: str) -> dict[str, Any] | None:
+        actions = target.get("actions")
+        if not isinstance(actions, list):
+            return None
+        return next(
+            (
+                item
+                for item in actions
+                if isinstance(item, dict) and str(item.get("name") or "").strip() == str(action_name or "").strip()
+            ),
+            None,
+        )
+
+    def _run_named_action_command(
+        self,
+        target_id: str,
+        action_name: str,
+        *,
+        replacements: dict[str, str] | None = None,
+    ) -> tuple[int, str, str, str]:
+        runtime = self.target_runtime.get(target_id)
+        if runtime is None:
+            return 2, "", "", f"unknown target: {target_id}"
+        target = runtime.get("target")
+        if not isinstance(target, dict):
+            return 2, "", "", f"target runtime missing for: {target_id}"
+
+        action = self._find_target_action(target, action_name)
+        if action is None:
+            return 2, "", "", f"action not found: {action_name}"
+
+        cmd = _normalize_cmd(action.get("cmd"))
+        if not cmd:
+            return 2, "", "", f"action command is empty: {action_name}"
+
+        replacements_map = {str(k): str(v) for k, v in (replacements or {}).items()}
+        if replacements_map:
+            for key, value in replacements_map.items():
+                token = "{" + key + "}"
+                cmd = [part.replace(token, value) for part in cmd]
+
+        cwd_text = str(action.get("cwd") or "").strip()
+        if replacements_map and cwd_text:
+            for key, value in replacements_map.items():
+                token = "{" + key + "}"
+                cwd_text = cwd_text.replace(token, value)
+        cwd = Path(cwd_text) if cwd_text else None
+        timeout_seconds = float(action.get("timeoutSeconds") or self.default_command_timeout_seconds)
+
+        try:
+            rc, stdout, stderr = run_cmd(cmd, cwd, timeout_seconds)
+            return rc, stdout, stderr, ""
+        except subprocess.TimeoutExpired:
+            return 2, "", "", f"action timeout after {timeout_seconds:.1f}s: {action_name}"
+        except Exception as ex:
+            return 2, "", "", str(ex)
+
+    def _refresh_config_editors(self, runtime: dict[str, Any], payload: dict[str, Any]) -> None:
+        editors = runtime.get("configEditors")
+        if not isinstance(editors, list):
+            return
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+        for editor in editors:
+            if not isinstance(editor, dict):
+                continue
+            path_json = str(editor.get("pathJsonpath") or "").strip()
+            path_literal = str(editor.get("pathLiteral") or "").strip()
+            has_direct_path_source = bool(path_json or path_literal)
+            if has_direct_path_source:
+                path_value: str | None = path_literal if path_literal else None
+                if path_json:
+                    resolved = json_path_get(payload, path_json)
+                    if resolved is not None:
+                        resolved_text = str(resolved).strip()
+                        if resolved_text:
+                            path_value = resolved_text
+                if path_value is not None:
+                    path_var = editor.get("pathVar")
+                    self._set_stringvar_if_changed(path_var, path_value or "-")
+                    if path_value != str(editor.get("lastPathValue") or ""):
+                        editor["lastPathValue"] = path_value
+                        editor["needsRefresh"] = True
+            self._refresh_config_editor_async(target_id, editor, show_loading=False)
+
+    def _refresh_config_editor_async(
+        self,
+        target_id: str,
+        editor: dict[str, Any],
+        *,
+        force: bool = False,
+        show_loading: bool | None = None,
+    ) -> None:
+        if force:
+            editor["needsRefresh"] = True
+        if not bool(editor.get("needsRefresh", False)):
+            return
+        if bool(editor.get("loading", False)):
+            return
+        editor["loading"] = True
+        editor["needsRefresh"] = False
+        if show_loading is None:
+            show_loading = not bool(editor.get("hasLoadedOnce", False))
+        status_var = editor.get("statusVar")
+        if show_loading:
+            self._set_stringvar_if_changed(status_var, "Loading...")
+        thread = threading.Thread(target=self._load_config_editor_data, args=(target_id, editor), daemon=True)
+        thread.start()
+
+    def _load_config_editor_data(self, target_id: str, editor: dict[str, Any]) -> None:
+        show_action = str(editor.get("showAction") or "").strip()
+        rc, stdout, stderr, command_error = self._run_named_action_command(target_id, show_action)
+        if command_error:
+            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", command_error))
+            return
+        if rc != 0:
+            message = (stderr or stdout or f"show action failed rc={rc}").strip()
+            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", message))
+            return
+
+        payload, parse_error = try_extract_json_object(stdout)
+        if payload is None:
+            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", parse_error))
+            return
+
+        path_value = ""
+        path_key = str(editor.get("pathKey") or "").strip()
+        if path_key:
+            path_entries = payload.get("paths")
+            if isinstance(path_entries, list):
+                match = next(
+                    (
+                        item
+                        for item in path_entries
+                        if isinstance(item, dict) and str(item.get("key") or "").strip() == path_key
+                    ),
+                    None,
+                )
+                if isinstance(match, dict):
+                    path_value = str(match.get("value") or "").strip()
+
+        entries_raw = payload.get("entries")
+        entries = entries_raw if isinstance(entries_raw, list) else []
+        filtered = self._filter_config_editor_entries(entries, editor)
+        self.root.after(0, lambda: self._finalize_config_editor_load(editor, filtered, path_value, ""))
+
+    def _filter_config_editor_entries(self, entries: list[Any], editor: dict[str, Any]) -> list[dict[str, Any]]:
+        include_prefix = str(editor.get("includePrefix") or "").strip()
+        include_keys_raw = editor.get("includeKeys")
+        include_keys = set(include_keys_raw) if isinstance(include_keys_raw, set) else set()
+        exclude_keys_raw = editor.get("excludeKeys")
+        exclude_keys = set(exclude_keys_raw) if isinstance(exclude_keys_raw, set) else set()
+        settable_only = bool(editor.get("settableOnly", True))
+
+        filtered: list[dict[str, Any]] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key:
+                continue
+            if include_prefix and not key.startswith(include_prefix):
+                continue
+            if include_keys and key not in include_keys:
+                continue
+            if exclude_keys and key in exclude_keys:
+                continue
+            if settable_only and bool(item.get("pathEntry", False)):
+                continue
+            filtered.append(item)
+
+        filtered.sort(key=lambda item: str(item.get("key") or ""))
+        return filtered
+
+    def _finalize_config_editor_load(
+        self,
+        editor: dict[str, Any],
+        entries: list[dict[str, Any]],
+        path_value: str,
+        error_message: str,
+    ) -> None:
+        editor["loading"] = False
+        status_var = editor.get("statusVar")
+        if error_message:
+            self._set_stringvar_if_changed(status_var, error_message)
+            if editor.get("lastEntriesSignature") is None:
+                self._render_config_editor_rows(editor, [])
+            return
+
+        editor["hasLoadedOnce"] = True
+        self._set_stringvar_if_changed(status_var, "Ready.")
+        path_var = editor.get("pathVar")
+        if isinstance(path_var, tk.StringVar) and path_value:
+            self._set_stringvar_if_changed(path_var, path_value)
+            editor["lastPathValue"] = path_value
+        entries_signature = self._config_editor_entries_signature(entries)
+        if entries_signature == editor.get("lastEntriesSignature"):
+            return
+        editor["lastEntriesSignature"] = entries_signature
+        self._render_config_editor_rows(editor, entries)
+
+    def _config_editor_entries_signature(self, entries: list[dict[str, Any]]) -> tuple[Any, ...]:
+        signature: list[tuple[Any, ...]] = []
+        for entry in entries:
+            key = str(entry.get("key") or "")
+            value = self._config_editor_value_text(entry.get("value"))
+            value_type = str(entry.get("valueType") or "")
+            constraint = str(entry.get("constraint") or "")
+            path_entry = bool(entry.get("pathEntry", False))
+            allowed_raw = entry.get("allowed")
+            allowed = (
+                tuple(self._config_editor_value_text(item) for item in allowed_raw)
+                if isinstance(allowed_raw, list)
+                else ()
+            )
+            signature.append((key, value, value_type, constraint, path_entry, allowed))
+        return tuple(signature)
+
+    def _render_config_editor_rows(self, editor: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+        rows_frame = editor.get("rowsFrame")
+        if not isinstance(rows_frame, ttk.Frame):
+            return
+        previous_row_state = editor.get("rowState")
+        if not isinstance(previous_row_state, dict):
+            previous_row_state = {}
+        for child in rows_frame.winfo_children():
+            child.destroy()
+
+        headers = ["Key", "Current", "New Value", "Validation", "Set"]
+        for column, label in enumerate(headers):
+            ttk.Label(rows_frame, text=label).grid(row=0, column=column, sticky="w", padx=6, pady=(2, 4))
+
+        if not entries:
+            editor["rowState"] = {}
+            ttk.Label(rows_frame, text="No matching config entries.").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+            return
+
+        target_id = str(editor.get("targetId") or "")
+        next_row_state: dict[str, dict[str, Any]] = {}
+        for row_index, entry in enumerate(entries, start=1):
+            key = str(entry.get("key") or "")
+            current_value = entry.get("value")
+            current_text = self._config_editor_value_text(current_value)
+
+            ttk.Label(rows_frame, text=key).grid(row=row_index, column=0, sticky="w", padx=6, pady=2)
+            ttk.Label(rows_frame, text=current_text).grid(row=row_index, column=1, sticky="w", padx=6, pady=2)
+
+            previous_state = previous_row_state.get(key)
+            previous_dirty = bool(previous_state.get("dirty", False)) if isinstance(previous_state, dict) else False
+            previous_var = previous_state.get("inputVar") if isinstance(previous_state, dict) else None
+            previous_text = str(previous_var.get()) if isinstance(previous_var, tk.StringVar) else current_text
+            input_text = previous_text if previous_dirty else current_text
+            input_var = tk.StringVar(value=input_text)
+            row_state = {
+                "inputVar": input_var,
+                "baseline": current_text,
+                "dirty": input_text != current_text,
+            }
+            next_row_state[key] = row_state
+
+            def on_input_change(*_: Any, entry_key: str = key, value_var: tk.StringVar = input_var) -> None:
+                row_states = editor.get("rowState")
+                if not isinstance(row_states, dict):
+                    return
+                state = row_states.get(entry_key)
+                if not isinstance(state, dict):
+                    return
+                baseline = str(state.get("baseline") or "")
+                state["dirty"] = str(value_var.get()) != baseline
+
+            input_var.trace_add("write", on_input_change)
+            allowed = entry.get("allowed")
+            value_type = str(entry.get("valueType") or "")
+            if isinstance(allowed, list) and len(allowed) > 0:
+                allowed_text = [self._config_editor_value_text(item) for item in allowed]
+                input_control = ttk.Combobox(rows_frame, textvariable=input_var, state="readonly", width=24)
+                input_control["values"] = allowed_text
+                if input_var.get() not in allowed_text and allowed_text:
+                    input_var.set(allowed_text[0])
+                input_control.grid(row=row_index, column=2, sticky="we", padx=6, pady=2)
+            elif value_type == "bool" or isinstance(current_value, bool):
+                input_control = ttk.Combobox(rows_frame, textvariable=input_var, state="readonly", width=10)
+                input_control["values"] = ["true", "false"]
+                if input_var.get().lower() not in {"true", "false"}:
+                    input_var.set("false")
+                input_control.grid(row=row_index, column=2, sticky="we", padx=6, pady=2)
+            else:
+                input_control = ttk.Entry(rows_frame, textvariable=input_var, width=32)
+                input_control.grid(row=row_index, column=2, sticky="we", padx=6, pady=2)
+
+            validation_var = tk.StringVar(value="")
+            ttk.Label(rows_frame, textvariable=validation_var).grid(row=row_index, column=3, sticky="w", padx=6, pady=2)
+            ttk.Button(
+                rows_frame,
+                text="Set",
+                command=lambda item=entry, var=input_var, state_var=validation_var: self._set_config_editor_entry(
+                    target_id,
+                    editor,
+                    item,
+                    var,
+                    state_var,
+                ),
+            ).grid(row=row_index, column=4, sticky="w", padx=6, pady=2)
+
+        editor["rowState"] = next_row_state
+        rows_frame.update_idletasks()
+        rows_canvas = editor.get("rowsCanvas")
+        if isinstance(rows_canvas, tk.Canvas):
+            rows_canvas.configure(scrollregion=rows_canvas.bbox("all"))
+
+    def _set_config_editor_entry(
+        self,
+        target_id: str,
+        editor: dict[str, Any],
+        entry: dict[str, Any],
+        input_var: tk.StringVar,
+        validation_var: tk.StringVar,
+    ) -> None:
+        key = str(entry.get("key") or "").strip()
+        if not key:
+            validation_var.set("invalid key")
+            return
+        raw_value = str(input_var.get() or "")
+        parsed, parse_error = self._parse_config_editor_value(entry, raw_value)
+        if parse_error:
+            validation_var.set(f"invalid: {parse_error}")
+            return
+
+        validation_var.set("saving...")
+        set_value = self._config_editor_set_arg(parsed)
+        set_action = str(editor.get("setAction") or "").strip()
+
+        def run_set() -> None:
+            rc, stdout, stderr, command_error = self._run_named_action_command(
+                target_id,
+                set_action,
+                replacements={"key": key, "value": set_value},
+            )
+            if command_error:
+                self.root.after(0, lambda: validation_var.set(command_error))
+                return
+            if rc != 0:
+                message = (stderr or stdout or f"set failed rc={rc}").strip()
+                first_line = message.splitlines()[0] if message else f"set failed rc={rc}"
+                self.root.after(0, lambda: validation_var.set(first_line))
+                return
+            self.root.after(0, lambda: validation_var.set("saved"))
+            editor["needsRefresh"] = True
+            self.root.after(0, lambda: self._refresh_config_editor_async(target_id, editor, force=True))
+            self._refresh_async()
+
+        threading.Thread(target=run_set, daemon=True).start()
+
+    def _config_editor_value_text(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+        return str(value)
+
+    def _config_editor_set_arg(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return "null"
+        return str(value)
+
+    def _parse_config_editor_value(self, entry: dict[str, Any], raw_value: str) -> tuple[Any, str | None]:
+        raw = str(raw_value or "").strip()
+        allowed = entry.get("allowed")
+        if isinstance(allowed, list) and len(allowed) > 0:
+            if all(isinstance(item, bool) for item in allowed):
+                parsed_bool = self._parse_bool_text(raw)
+                if parsed_bool is None:
+                    return raw, "must be true|false"
+                if parsed_bool not in allowed:
+                    return raw, f"must be one of: {allowed}"
+                return parsed_bool, None
+            for candidate in allowed:
+                candidate_text = self._config_editor_value_text(candidate).strip().lower()
+                if raw.lower() == candidate_text:
+                    return candidate, None
+            return raw, f"must be one of: {allowed}"
+
+        current_value = entry.get("value")
+        value_type = str(entry.get("valueType") or "").strip().lower()
+        if not value_type:
+            if isinstance(current_value, bool):
+                value_type = "bool"
+            elif isinstance(current_value, int) and not isinstance(current_value, bool):
+                value_type = "int"
+            elif isinstance(current_value, float):
+                value_type = "float"
+            elif current_value is None:
+                value_type = "null"
+            else:
+                value_type = "string"
+
+        parsed: Any = raw
+        if value_type == "bool":
+            parsed_bool = self._parse_bool_text(raw)
+            if parsed_bool is None:
+                return raw, "must be true|false"
+            parsed = parsed_bool
+        elif value_type == "int":
+            try:
+                parsed = int(raw)
+            except Exception:
+                return raw, "must be int"
+        elif value_type == "float":
+            try:
+                parsed = float(raw)
+            except Exception:
+                return raw, "must be float"
+        elif value_type == "null":
+            lowered = raw.lower()
+            if lowered == "null":
+                parsed = None
+            else:
+                parsed_bool = self._parse_bool_text(raw)
+                if parsed_bool is not None:
+                    parsed = parsed_bool
+                else:
+                    try:
+                        parsed = int(raw)
+                    except Exception:
+                        try:
+                            parsed = float(raw)
+                        except Exception:
+                            parsed = raw
+        else:
+            parsed = raw
+            if isinstance(current_value, str) and any(ch in current_value for ch in ("\r", "\n", "\t")):
+                parsed = raw.replace("\\r", "\r").replace("\\n", "\n").replace("\\t", "\t")
+
+        constraint = str(entry.get("constraint") or "").strip()
+        constraint_error = self._config_editor_constraint_error(parsed, constraint)
+        if constraint_error:
+            return parsed, constraint_error
+        return parsed, None
+
+    def _parse_bool_text(self, text: str) -> bool | None:
+        lowered = str(text or "").strip().lower()
+        if lowered in {"true", "1", "yes", "y"}:
+            return True
+        if lowered in {"false", "0", "no", "n"}:
+            return False
+        return None
+
+    def _set_stringvar_if_changed(self, var: Any, value: str) -> None:
+        if not isinstance(var, tk.StringVar):
+            return
+        text = str(value)
+        if var.get() == text:
+            return
+        var.set(text)
+
+    def _config_editor_constraint_error(self, value: Any, constraint: str) -> str | None:
+        text = str(constraint or "").strip()
+        if not text:
+            return None
+        if text.startswith("^"):
+            if not isinstance(value, str):
+                return f"value type must be string for {text}"
+            if re.fullmatch(text, value) is None:
+                return f"value does not match {text}"
+            return None
+        if text == "int 1..65535":
+            if not isinstance(value, int):
+                return "must be int 1..65535"
+            if value < 1 or value > 65535:
+                return "must be int 1..65535"
+            return None
+        return None
 
     def _open_file_path(self, path_text: str) -> None:
         candidate = str(path_text or "").strip()
@@ -1634,6 +2244,7 @@ class MonitorApp:
                 else:
                     banner_var.set("")
             self._refresh_file_viewers(runtime, payload)
+            self._refresh_config_editors(runtime, payload)
 
         self.root.after(0, update)
 
@@ -1725,7 +2336,11 @@ class MonitorApp:
             self.root.after(0, lambda: self.console_var.set(f"running action: {action_label}"))
 
             if detached:
-                subprocess.Popen(cmd, cwd=str(cwd) if cwd else None)
+                subprocess.Popen(
+                    cmd,
+                    cwd=str(cwd) if cwd else None,
+                    creationflags=_no_window_creationflags(),
+                )
                 self._append_action_output(target_id, "system", f"{action_label}: detached process started")
                 self.root.after(0, lambda: self.console_var.set(f"started(detached): {action_label}"))
                 return
@@ -1737,6 +2352,7 @@ class MonitorApp:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                creationflags=_no_window_creationflags(),
             )
 
             stdout_thread = threading.Thread(

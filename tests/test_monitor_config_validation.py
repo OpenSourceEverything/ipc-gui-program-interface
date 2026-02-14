@@ -65,6 +65,32 @@ class MonitorConfigValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 monitor.load_monitor_config(root_config)
 
+    def test_accepts_config_editor_widget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            _write_json(
+                target,
+                (
+                    '{"configVersion":2,"id":"bridge","title":"Bridge",'
+                    '"status":{"cwd":".","cmd":["python","-V"]},'
+                    '"ui":{"tabs":[{"id":"cfg","title":"Config","widgets":['
+                    '{"type":"config_editor","title":"Editor","showAction":"config_show","setAction":"config_set_key"}'
+                    ']}]},'
+                    '"actions":[{"name":"config_show","label":"Show","cwd":".","cmd":["python","-V"]},'
+                    '{"name":"config_set_key","label":"Set","cwd":".","cmd":["python","-V"]}]}'
+                ),
+            )
+            root_config = root / "monitor_config.json"
+            _write_json(
+                root_config,
+                '{"refreshSeconds":1.0,"commandTimeoutSeconds":10.0,"includeFiles":["target.json"]}',
+            )
+
+            loaded = monitor.load_monitor_config(root_config)
+            targets = loaded.get("targets", [])
+            self.assertEqual(len(targets), 1)
+
     def test_missing_jsonpath_returns_none(self):
         payload = {"a": {"b": 1}}
         self.assertIsNone(monitor.json_path_get(payload, "$.a.c"))

@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
 
-DEFAULT_FIXTURE_REPO = Path(r"\\H3FT06-40318\c\40318-SOFT")
-DEFAULT_BRIDGE_REPO = Path(r"C:\repos\test-fixture-data-bridge")
 SCHEMA_NAME = "monitor.target.v2.schema.json"
 
 
@@ -19,8 +18,8 @@ def _target_schema_path(repo_root: Path) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture-repo", default=str(DEFAULT_FIXTURE_REPO))
-    parser.add_argument("--bridge-repo", default=str(DEFAULT_BRIDGE_REPO))
+    parser.add_argument("--fixture-repo", default=os.getenv("FIXTURE_REPO", "").strip())
+    parser.add_argument("--bridge-repo", default=os.getenv("BRIDGE_REPO", "").strip())
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -31,10 +30,16 @@ def main() -> int:
     src_schema = (repo_root / "schemas" / SCHEMA_NAME).resolve()
     if not src_schema.exists():
         raise SystemExit(f"missing canonical schema: {src_schema}")
+    fixture_repo = str(args.fixture_repo or "").strip()
+    bridge_repo = str(args.bridge_repo or "").strip()
+    if not fixture_repo:
+        raise SystemExit("fixture repo not provided (--fixture-repo or FIXTURE_REPO).")
+    if not bridge_repo:
+        raise SystemExit("bridge repo not provided (--bridge-repo or BRIDGE_REPO).")
 
     destinations = [
-        _target_schema_path(Path(args.fixture_repo)),
-        _target_schema_path(Path(args.bridge_repo)),
+        _target_schema_path(Path(fixture_repo)),
+        _target_schema_path(Path(bridge_repo)),
     ]
 
     for dst in destinations:

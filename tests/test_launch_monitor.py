@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -76,6 +77,28 @@ class LaunchMonitorTests(unittest.TestCase):
             includes = payload.get("includeFiles", [])
             self.assertEqual(len(includes), 1)
             self.assertTrue(any("monitor.fixture.target.json" in item for item in includes))
+
+    def test_requires_explicit_paths_when_env_is_empty(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        script = repo_root / "scripts" / "launch_monitor.py"
+        self.assertTrue(script.exists())
+
+        env = dict(os.environ)
+        env.pop("FIXTURE_REPO", None)
+        env.pop("BRIDGE_REPO", None)
+        env.pop("FIXTURE_TARGET", None)
+        env.pop("BRIDGE_TARGET", None)
+
+        completed = subprocess.run(
+            ["python", str(script), "--no-launch"],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("fixture target requested", completed.stderr)
 
 
 if __name__ == "__main__":

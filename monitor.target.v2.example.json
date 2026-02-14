@@ -17,11 +17,21 @@
   },
   "logs": [
     {
-      "stream": "bridge.out",
-      "title": "Bridge Runtime",
+      "stream": "bridge.runtime",
+      "title": "Bridge Runtime Out",
       "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\dev\\realtime-pair-*\\bridge.out.log",
-      "tailLines": 400,
+      "tailLines": 240,
       "maxLineBytes": 4096,
+      "pollMs": 300,
+      "encoding": "utf-8",
+      "allowMissing": true
+    },
+    {
+      "stream": "bridge.master",
+      "title": "Bridge Master",
+      "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\runs\\sim-live\\merged\\events.jsonl",
+      "tailLines": 240,
+      "maxLineBytes": 8192,
       "pollMs": 300,
       "encoding": "utf-8",
       "allowMissing": true
@@ -30,14 +40,86 @@
       "stream": "bridge.service",
       "title": "Bridge Service",
       "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\service\\db-bridge-live-*.log",
-      "tailLines": 400,
+      "tailLines": 240,
       "maxLineBytes": 4096,
+      "pollMs": 300,
+      "encoding": "utf-8",
+      "allowMissing": true
+    },
+    {
+      "stream": "bridge.ingest_input",
+      "title": "Bridge Ingest Input",
+      "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\test-input\\run-sim.input.jsonl",
+      "tailLines": 120,
+      "maxLineBytes": 8192,
+      "pollMs": 300,
+      "encoding": "utf-8",
+      "allowMissing": true
+    },
+    {
+      "stream": "bridge.spool",
+      "title": "Bridge Spool",
+      "glob": "C:\\repos\\test-fixture-data-bridge\\logs\\spool\\**\\*.jsonl",
+      "tailLines": 240,
+      "maxLineBytes": 8192,
       "pollMs": 300,
       "encoding": "utf-8",
       "allowMissing": true
     }
   ],
   "actions": [
+    {
+      "name": "run_start",
+      "label": "Start Run (active profile, detached)",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "scripts/gui_run_active.py",
+        "--no-build"
+      ],
+      "detached": true,
+      "timeoutSeconds": 120.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "run_stop",
+      "label": "Stop Run",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "stop"
+      ],
+      "timeoutSeconds": 20.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "set_profile",
+      "label": "Set Profile",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "config",
+        "set",
+        "profile",
+        "{value}"
+      ],
+      "timeoutSeconds": 30.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "verify_static",
+      "label": "Verify",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "verify"
+      ],
+      "timeoutSeconds": 300.0,
+      "showOutputPanel": true
+    },
     {
       "name": "validate_contract",
       "label": "Validate Contract",
@@ -48,7 +130,62 @@
         "validate-contract"
       ],
       "timeoutSeconds": 120.0,
-      "confirm": "Run contract validation now?",
+      "showOutputPanel": true
+    },
+    {
+      "name": "test_quick",
+      "label": "Test Quick",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "test",
+        "quick",
+        "--no-build"
+      ],
+      "timeoutSeconds": 600.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "test_core",
+      "label": "Test Core",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "test",
+        "core",
+        "--no-build"
+      ],
+      "timeoutSeconds": 600.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "test_simulation",
+      "label": "Test Simulation",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "test",
+        "simulation",
+        "--no-build"
+      ],
+      "timeoutSeconds": 900.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "db_check",
+      "label": "DB Check",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "scripts/gui_db_ops.py",
+        "check",
+        "--target",
+        "sim"
+      ],
+      "timeoutSeconds": 60.0,
       "showOutputPanel": true
     },
     {
@@ -57,15 +194,41 @@
       "cwd": "C:\\repos\\test-fixture-data-bridge",
       "cmd": [
         "python",
-        "dev",
-        "db",
+        "scripts/gui_db_ops.py",
         "counts",
         "--target",
         "sim"
       ],
+      "timeoutSeconds": 60.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "db_wipe",
+      "label": "Wipe DB (local sim only)",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "scripts/gui_db_ops.py",
+        "wipe",
+        "--target",
+        "sim"
+      ],
+      "timeoutSeconds": 90.0,
+      "showOutputPanel": true
+    },
+    {
+      "name": "config_show",
+      "label": "Config Show (json)",
+      "cwd": "C:\\repos\\test-fixture-data-bridge",
+      "cmd": [
+        "python",
+        "dev",
+        "config",
+        "show",
+        "--json"
+      ],
       "timeoutSeconds": 30.0,
-      "showOutputPanel": true,
-      "mutex": "bridge-db"
+      "showOutputPanel": true
     }
   ],
   "ui": {
@@ -76,11 +239,11 @@
         "widgets": [
           {
             "type": "kv",
-            "title": "Bridge Core",
+            "title": "Bridge Runtime",
             "items": [
               {
                 "label": "Process Running",
-                "jsonpath": "$.processRunning"
+                "jsonpath": "$.processRunningDisplay"
               },
               {
                 "label": "Transport Mode",
@@ -93,46 +256,181 @@
               {
                 "label": "Health State",
                 "jsonpath": "$.healthState"
+              },
+              {
+                "label": "Spool Lines",
+                "jsonpath": "$.spoolLines"
+              },
+              {
+                "label": "Service Ingest (session)",
+                "jsonpath": "$.serviceLogIngestedRuns"
+              },
+              {
+                "label": "Service Log Lines",
+                "jsonpath": "$.serviceLogLines"
+              },
+              {
+                "label": "Last Ingested Key",
+                "jsonpath": "$.lastIngestedRunKey"
               }
             ]
           },
           {
             "type": "table",
-            "title": "DB Summary",
+            "title": "DB Status",
             "columns": [
               {
-                "label": "Ingest Rows",
+                "label": "DB Ingest Rows",
                 "jsonpath": "$.dbIngestRows"
               },
               {
-                "label": "Run Comm Stats",
+                "label": "DB CommStats Rows",
                 "jsonpath": "$.dbRunCommStatsRows"
               },
               {
-                "label": "Last Received",
-                "jsonpath": "$.dbLastReceivedAt"
+                "label": "DB Ingest Rows (session)",
+                "jsonpath": "$.dbIngestRowsSession"
               },
               {
-                "label": "Query State",
-                "jsonpath": "$.dbQueryState"
+                "label": "DB Last Received",
+                "jsonpath": "$.dbLastReceivedAt"
               }
             ]
           }
         ]
       },
       {
-        "id": "logs",
-        "title": "Logs",
+        "id": "config",
+        "title": "Config",
         "widgets": [
           {
-            "type": "log",
-            "title": "Bridge Runtime",
-            "stream": "bridge.out"
+            "type": "kv",
+            "title": "Resolved",
+            "items": [
+              {
+                "label": "Profile",
+                "jsonpath": "$.profile"
+              },
+              {
+                "label": "Allowed Profiles",
+                "jsonpath": "$.allowedProfiles"
+              },
+              {
+                "label": "DB Active Profile",
+                "jsonpath": "$.dbActiveProfileName"
+              },
+              {
+                "label": "DB Allowed Profiles",
+                "jsonpath": "$.allowedDbProfiles"
+              },
+              {
+                "label": "Config Path",
+                "jsonpath": "$.configPath"
+              },
+              {
+                "label": "DB Config Path",
+                "jsonpath": "$.dbConfigPath"
+              }
+            ]
+          }
+        ],
+        "children": [
+          {
+            "id": "config-active",
+            "title": "Config Active",
+            "widgets": [
+              {
+                "type": "file_view",
+                "title": "Active Bridge Config",
+                "pathJsonpath": "$.configPath"
+              }
+            ]
           },
           {
-            "type": "log",
-            "title": "Bridge Service",
-            "stream": "bridge.service"
+            "id": "config-profile-pointer",
+            "title": "Config Profile Pointer",
+            "widgets": [
+              {
+                "type": "file_view",
+                "title": "Profile Pointer",
+                "pathJsonpath": "$.profilePointerPath"
+              }
+            ]
+          },
+          {
+            "id": "config-test-pointer",
+            "title": "Config Test Pointer",
+            "widgets": [
+              {
+                "type": "file_view",
+                "title": "Test Profile Pointer",
+                "pathJsonpath": "$.testProfilePointerPath"
+              }
+            ]
+          },
+          {
+            "id": "config-test-profile",
+            "title": "Config Test Profile",
+            "widgets": [
+              {
+                "type": "file_view",
+                "title": "Test Profile",
+                "pathJsonpath": "$.testProfilePath"
+              }
+            ]
+          },
+          {
+            "id": "config-db-active",
+            "title": "Config DB Active",
+            "widgets": [
+              {
+                "type": "file_view",
+                "title": "DB Active Pointer",
+                "pathJsonpath": "$.dbActiveProfilePath"
+              }
+            ]
+          },
+          {
+            "id": "config-db-profile",
+            "title": "Config DB Profile",
+            "widgets": [
+              {
+                "type": "file_view",
+                "title": "DB Profile Config",
+                "pathJsonpath": "$.dbConfigPath"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "tests",
+        "title": "Tests",
+        "widgets": [
+          {
+            "type": "action_select",
+            "title": "Run Test",
+            "includePrefix": "test_",
+            "emptyLabel": "Select test action",
+            "runLabel": "Run",
+            "showCommand": true
+          },
+          {
+            "type": "action_map",
+            "title": "Test Command Details",
+            "includeCommands": true,
+            "showActionName": true,
+            "includePrefix": "test_"
+          },
+          {
+            "type": "button",
+            "label": "Verify",
+            "action": "verify_static"
+          },
+          {
+            "type": "button",
+            "label": "Validate Contract",
+            "action": "validate_contract"
           }
         ]
       },
@@ -141,14 +439,224 @@
         "title": "Actions",
         "widgets": [
           {
+            "type": "profile_select",
+            "title": "Active Profile",
+            "action": "set_profile",
+            "optionsJsonpath": "$.allowedProfiles",
+            "currentJsonpath": "$.profile",
+            "emptyLabel": "Select profile",
+            "applyLabel": "Set Active"
+          },
+          {
             "type": "button",
-            "label": "Validate Contract",
-            "action": "validate_contract"
+            "label": "Start Run (active profile, detached)",
+            "action": "run_start"
+          },
+          {
+            "type": "button",
+            "label": "Stop Run",
+            "action": "run_stop"
+          },
+          {
+            "type": "button",
+            "label": "Config Show (json)",
+            "action": "config_show"
+          },
+          {
+            "type": "action_select",
+            "title": "Run Any Action",
+            "emptyLabel": "Select action",
+            "runLabel": "Run",
+            "showCommand": true
+          },
+          {
+            "type": "action_map",
+            "title": "Command Map",
+            "includeCommands": true,
+            "showActionName": true
+          }
+        ]
+      },
+      {
+        "id": "db",
+        "title": "DB",
+        "widgets": [
+          {
+            "type": "kv",
+            "title": "DB Details",
+            "items": [
+              {
+                "label": "DB Active Profile",
+                "jsonpath": "$.dbActiveProfileName"
+              },
+              {
+                "label": "DB Profile Type",
+                "jsonpath": "$.dbProfileType"
+              },
+              {
+                "label": "DB Target",
+                "jsonpath": "$.dbTarget"
+              },
+              {
+                "label": "DB Host",
+                "jsonpath": "$.dbHost"
+              },
+              {
+                "label": "DB Port",
+                "jsonpath": "$.dbPort"
+              },
+              {
+                "label": "DB Database",
+                "jsonpath": "$.dbDatabase"
+              },
+              {
+                "label": "DB User",
+                "jsonpath": "$.dbUser"
+              },
+              {
+                "label": "DB Require SSL",
+                "jsonpath": "$.dbRequireSsl"
+              },
+              {
+                "label": "DB Config Path",
+                "jsonpath": "$.dbConfigPath"
+              },
+              {
+                "label": "DB Allowed Profiles",
+                "jsonpath": "$.allowedDbProfiles"
+              },
+              {
+                "label": "DB Query State",
+                "jsonpath": "$.dbQueryState"
+              },
+              {
+                "label": "DB Query Error",
+                "jsonpath": "$.dbQueryError"
+              }
+            ]
+          },
+          {
+            "type": "file_view",
+            "title": "DB Profile Config",
+            "pathJsonpath": "$.dbConfigPath"
+          },
+          {
+            "type": "file_view",
+            "title": "DB Active Pointer",
+            "pathJsonpath": "$.dbActiveProfilePath"
+          },
+          {
+            "type": "table",
+            "title": "DB Counters",
+            "columns": [
+              {
+                "label": "DB Ingest Rows",
+                "jsonpath": "$.dbIngestRows"
+              },
+              {
+                "label": "DB CommStats Rows",
+                "jsonpath": "$.dbRunCommStatsRows"
+              },
+              {
+                "label": "DB Ingest Rows (session)",
+                "jsonpath": "$.dbIngestRowsSession"
+              },
+              {
+                "label": "DB Last Received",
+                "jsonpath": "$.dbLastReceivedAt"
+              }
+            ]
+          },
+          {
+            "type": "action_select",
+            "title": "Run DB Operation",
+            "includePrefix": "db_",
+            "emptyLabel": "Select DB action",
+            "runLabel": "Run",
+            "showCommand": true
+          },
+          {
+            "type": "action_map",
+            "title": "DB Command Details",
+            "includeCommands": true,
+            "showActionName": true,
+            "includePrefix": "db_"
+          },
+          {
+            "type": "button",
+            "label": "DB Check",
+            "action": "db_check"
           },
           {
             "type": "button",
             "label": "DB Counts",
             "action": "db_counts"
+          },
+          {
+            "type": "button",
+            "label": "Wipe DB (local sim only)",
+            "action": "db_wipe"
+          }
+        ]
+      },
+      {
+        "id": "logs",
+        "title": "Logs",
+        "children": [
+          {
+            "id": "logs-master",
+            "title": "Master",
+            "widgets": [
+              {
+                "type": "log",
+                "title": "Bridge Master",
+                "stream": "bridge.master"
+              }
+            ]
+          },
+          {
+            "id": "logs-runtime",
+            "title": "Bridge Runtime Out",
+            "widgets": [
+              {
+                "type": "log",
+                "title": "Bridge Runtime Out",
+                "stream": "bridge.runtime"
+              }
+            ]
+          },
+          {
+            "id": "logs-service",
+            "title": "Bridge Service",
+            "widgets": [
+              {
+                "type": "log",
+                "title": "Bridge Service",
+                "stream": "bridge.service"
+              }
+            ]
+          },
+          {
+            "id": "logs-ingest-input",
+            "title": "Bridge Ingest Input",
+            "widgets": [
+              {
+                "type": "log",
+                "title": "Bridge Ingest Input",
+                "stream": "bridge.ingest_input"
+              }
+            ]
+          },
+          {
+            "id": "logs-spool",
+            "title": "Bridge Spool",
+            "widgets": [
+              {
+                "type": "log",
+                "title": "Bridge Spool",
+                "stream": "bridge.spool"
+              }
+            ]
           }
         ]
       }

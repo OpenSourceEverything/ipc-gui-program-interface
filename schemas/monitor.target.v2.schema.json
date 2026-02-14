@@ -21,7 +21,8 @@
             "profile_select",
             "action_map",
             "action_select",
-            "file_view"
+            "file_view",
+            "config_editor"
           ]
         }
       }

@@ -9,15 +9,13 @@ import shutil
 from pathlib import Path
 
 
-DEFAULT_FIXTURE_REPO = Path(r"\\H3FT06-40318\c\40318-SOFT")
-DEFAULT_BRIDGE_REPO = Path(r"C:\repos\test-fixture-data-bridge")
 EMBED_RELATIVE = Path("tools") / "ipc-gui-program-interface"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture-repo", default=str(DEFAULT_FIXTURE_REPO))
-    parser.add_argument("--bridge-repo", default=str(DEFAULT_BRIDGE_REPO))
+    parser.add_argument("--fixture-repo", default=os.getenv("FIXTURE_REPO", "").strip())
+    parser.add_argument("--bridge-repo", default=os.getenv("BRIDGE_REPO", "").strip())
     parser.add_argument("--clean", action="store_true", help="Remove existing embed folder before copy.")
     parser.add_argument(
         "--targets",
@@ -59,26 +57,51 @@ def copy_item(source_root: Path, relative: str, destination_root: Path) -> None:
 def launcher_text_for_fixture() -> str:
     return """#!/usr/bin/env python3
 from __future__ import annotations
+import argparse
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+def _resolve_canonical_repo(repo_root: Path, explicit: str) -> Path:
+    if explicit.strip():
+        return Path(explicit).resolve()
+    env_value = os.getenv("IPC_GUI_CANONICAL_REPO", "").strip()
+    if env_value:
+        return Path(env_value).resolve()
+    config_path = repo_root / "config" / "gui" / "monitor.canonical.json"
+    if config_path.exists():
+        payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        if isinstance(payload, dict):
+            configured = str(payload.get("canonicalRepo") or "").strip()
+            if configured:
+                return Path(configured).resolve()
+    raise RuntimeError(
+        "Canonical GUI repo not set. Use --canonical-repo, IPC_GUI_CANONICAL_REPO, "
+        "or config/gui/monitor.canonical.json."
+    )
+
+def _parse_known_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--canonical-repo", default="")
+    return parser.parse_known_args(argv)
+
 def main() -> int:
+    known, passthrough = _parse_known_args(list(sys.argv[1:]))
     repo_root = Path(__file__).resolve().parents[1]
-    gui_root = repo_root / "tools" / "ipc-gui-program-interface"
+    gui_root = _resolve_canonical_repo(repo_root, str(known.canonical_repo or ""))
     launcher = gui_root / "scripts" / "launch_monitor.py"
     if not launcher.exists():
         print(f"missing launcher: {launcher}", file=sys.stderr)
         return 2
 
-    argv = list(sys.argv[1:])
+    argv = passthrough
     include_bridge = False
     if "--with-bridge" in argv:
         include_bridge = True
         argv.remove("--with-bridge")
 
-    bridge_repo = os.getenv("BRIDGE_REPO", r"C:\\repos\\test-fixture-data-bridge")
     cmd = [
         sys.executable,
         str(launcher),
@@ -87,7 +110,10 @@ def main() -> int:
         "--no-include-bridge",
     ]
     if include_bridge:
-        cmd.extend(["--bridge-repo", str(bridge_repo), "--include-bridge"])
+        bridge_repo = os.getenv("BRIDGE_REPO", "").strip()
+        cmd.append("--include-bridge")
+        if bridge_repo and "--bridge-repo" not in argv and "--bridge-target" not in argv:
+            cmd.extend(["--bridge-repo", bridge_repo])
     cmd.extend(argv)
     return subprocess.call(cmd, cwd=gui_root)
 
@@ -99,26 +125,51 @@ if __name__ == "__main__":
 def launcher_text_for_bridge() -> str:
     return """#!/usr/bin/env python3
 from __future__ import annotations
+import argparse
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+def _resolve_canonical_repo(repo_root: Path, explicit: str) -> Path:
+    if explicit.strip():
+        return Path(explicit).resolve()
+    env_value = os.getenv("IPC_GUI_CANONICAL_REPO", "").strip()
+    if env_value:
+        return Path(env_value).resolve()
+    config_path = repo_root / "config" / "gui" / "monitor.canonical.json"
+    if config_path.exists():
+        payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        if isinstance(payload, dict):
+            configured = str(payload.get("canonicalRepo") or "").strip()
+            if configured:
+                return Path(configured).resolve()
+    raise RuntimeError(
+        "Canonical GUI repo not set. Use --canonical-repo, IPC_GUI_CANONICAL_REPO, "
+        "or config/gui/monitor.canonical.json."
+    )
+
+def _parse_known_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--canonical-repo", default="")
+    return parser.parse_known_args(argv)
+
 def main() -> int:
+    known, passthrough = _parse_known_args(list(sys.argv[1:]))
     repo_root = Path(__file__).resolve().parents[1]
-    gui_root = repo_root / "tools" / "ipc-gui-program-interface"
+    gui_root = _resolve_canonical_repo(repo_root, str(known.canonical_repo or ""))
     launcher = gui_root / "scripts" / "launch_monitor.py"
     if not launcher.exists():
         print(f"missing launcher: {launcher}", file=sys.stderr)
         return 2
 
-    argv = list(sys.argv[1:])
+    argv = passthrough
     include_fixture = False
     if "--with-fixture" in argv:
         include_fixture = True
         argv.remove("--with-fixture")
 
-    fixture_repo = os.getenv("FIXTURE_REPO", r"\\\\H3FT06-40318\\c\\40318-SOFT")
     cmd = [
         sys.executable,
         str(launcher),
@@ -127,7 +178,10 @@ def main() -> int:
         "--no-include-fixture",
     ]
     if include_fixture:
-        cmd.extend(["--fixture-repo", str(fixture_repo), "--include-fixture"])
+        fixture_repo = os.getenv("FIXTURE_REPO", "").strip()
+        cmd.append("--include-fixture")
+        if fixture_repo and "--fixture-repo" not in argv and "--fixture-target" not in argv:
+            cmd.extend(["--fixture-repo", fixture_repo])
     cmd.extend(argv)
     return subprocess.call(cmd, cwd=gui_root)
 
@@ -173,8 +227,14 @@ def deploy_to_repo(source_root: Path, repo_root: Path, role: str, clean: bool) -
 def main() -> int:
     args = parse_args()
     source_root = Path(__file__).resolve().parents[1]
-    fixture_repo = Path(args.fixture_repo).resolve()
-    bridge_repo = Path(args.bridge_repo).resolve()
+    fixture_repo_text = str(args.fixture_repo or "").strip()
+    bridge_repo_text = str(args.bridge_repo or "").strip()
+    if not fixture_repo_text:
+        raise RuntimeError("fixture repo not provided (--fixture-repo or FIXTURE_REPO).")
+    if not bridge_repo_text:
+        raise RuntimeError("bridge repo not provided (--bridge-repo or BRIDGE_REPO).")
+    fixture_repo = Path(fixture_repo_text).resolve()
+    bridge_repo = Path(bridge_repo_text).resolve()
 
     target_map = {
         "fixture": fixture_repo,
