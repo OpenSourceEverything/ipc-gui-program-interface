@@ -12,6 +12,9 @@ This generates a root config from repo-local target files and launches the GUI.
 
 Runtime sidecars are service-owned by fixture/bridge repos; GUI remains a blind hook-in.
 
+Contract flow:
+- `docs/GUI-Contract-Dev-Flow.md`
+
 ## Run
 
 ```bash
@@ -40,6 +43,8 @@ Monitor schemas:
 python scripts/launch_monitor.py --no-launch --print-config
 python scripts/sync_target_schema.py
 python scripts/launch_monitor.py --fixture-repo \\H3FT06-40318\c\40318-SOFT --bridge-repo C:\repos\test-fixture-data-bridge
+python scripts/check_target_contract.py --target C:\repos\test-fixture-data-bridge\config\gui\monitor.bridge.target.json
+python scripts/check_target_contract.py --target \\H3FT06-40318\c\40318-SOFT\config\gui\monitor.fixture.target.json
 ```
 
 Key flags:
@@ -126,8 +131,16 @@ Target shape:
 - `ui.tabs[]`:
   - each tab has `id`, `title`, and at least one of `widgets[]` or `children[]`
   - tab nesting is supported recursively through `children[]`
-- widget types: `kv`, `table`, `log`, `button`, `profile_select`, `action_map`, `action_select`, `file_view`, `config_editor`
+- widget types: `kv`, `table`, `rows_table`, `log`, `button`, `profile_select`, `action_map`, `action_select`, `text_block`, `file_view`, `config_editor`, `config_file_select`
 - `actionOutput.maxLines`, `actionOutput.maxBytes` (optional)
+
+`rows_table` widget contract:
+
+- required:
+  - `rowsJsonpath` -> JSONPath resolving to a list in status payload
+  - `columns[]` -> each item has `label` + (`key` or `jsonpath`)
+- optional:
+  - `emptyText`, `maxRows`
 
 `config_editor` widget contract:
 

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -107,6 +108,27 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
             _assert_allowed_keys(item, {"label", "jsonpath"}, f"{context}.columns[{idx}]")
         return
 
+    if widget_type == "rows_table":
+        _assert_allowed_keys(widget, {"type", "title", "rowsJsonpath", "columns", "emptyText", "maxRows"}, context)
+        rows_path = str(widget.get("rowsJsonpath") or "").strip()
+        if not rows_path:
+            raise ValueError(f"{context}.rowsJsonpath must be a non-empty string.")
+        columns = widget.get("columns")
+        if not isinstance(columns, list):
+            raise ValueError(f"{context}.columns must be a list.")
+        for idx, item in enumerate(columns, 1):
+            if not isinstance(item, dict):
+                raise ValueError(f"{context}.columns[{idx}] must be an object.")
+            _assert_allowed_keys(item, {"label", "key", "jsonpath"}, f"{context}.columns[{idx}]")
+            label = str(item.get("label") or "").strip()
+            key = str(item.get("key") or "").strip()
+            jsonpath = str(item.get("jsonpath") or "").strip()
+            if not label:
+                raise ValueError(f"{context}.columns[{idx}].label must be a non-empty string.")
+            if not key and not jsonpath:
+                raise ValueError(f"{context}.columns[{idx}] requires key or jsonpath.")
+        return
+
     if widget_type == "log":
         _assert_allowed_keys(
             widget,
@@ -128,7 +150,11 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
         return
 
     if widget_type == "action_map":
-        _assert_allowed_keys(widget, {"type", "title", "includeCommands", "showActionName", "includePrefix"}, context)
+        _assert_allowed_keys(
+            widget,
+            {"type", "title", "includeCommands", "showActionName", "includePrefix", "includeRegex"},
+            context,
+        )
         return
 
     if widget_type == "action_select":
@@ -137,6 +163,10 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
             {"type", "title", "includePrefix", "includeRegex", "emptyLabel", "runLabel", "showCommand"},
             context,
         )
+        return
+
+    if widget_type == "text_block":
+        _assert_allowed_keys(widget, {"type", "title", "text", "height"}, context)
         return
 
     if widget_type == "file_view":
@@ -183,7 +213,70 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
                     raise ValueError(f"{context}.{list_key}[{item_index}] must be a non-empty string.")
         return
 
+    if widget_type == "config_file_select":
+        _assert_allowed_keys(
+            widget,
+            {
+                "type",
+                "title",
+                "showAction",
+                "setAction",
+                "key",
+                "pathKey",
+                "emptyLabel",
+                "applyLabel",
+                "reloadLabel",
+            },
+            context,
+        )
+        show_action = str(widget.get("showAction") or "").strip()
+        set_action = str(widget.get("setAction") or "").strip()
+        key = str(widget.get("key") or "").strip()
+        path_key = str(widget.get("pathKey") or "").strip()
+        if not show_action:
+            raise ValueError(f"{context}.showAction must be a non-empty string.")
+        if not set_action:
+            raise ValueError(f"{context}.setAction must be a non-empty string.")
+        if not key:
+            raise ValueError(f"{context}.key must be a non-empty string.")
+        if not path_key:
+            raise ValueError(f"{context}.pathKey must be a non-empty string.")
+        return
+
     raise ValueError(f"{context} has unsupported widget type '{widget_type or '(blank)'}'.")
+
+
+def _validate_action_arg(arg: dict[str, Any], context: str) -> None:
+    _assert_allowed_keys(
+        arg,
+        {
+            "name",
+            "label",
+            "required",
+            "type",
+            "placeholder",
+            "pattern",
+            "optionsJsonpath",
+            "options",
+        },
+        context,
+    )
+    name = str(arg.get("name") or "").strip()
+    if not name:
+        raise ValueError(f"{context}.name must be a non-empty string.")
+    arg_type = str(arg.get("type") or "string").strip().lower()
+    if arg_type not in {"string", "int", "float", "bool"}:
+        raise ValueError(f"{context}.type must be one of string|int|float|bool.")
+    options_jsonpath = str(arg.get("optionsJsonpath") or "").strip()
+    if options_jsonpath and not options_jsonpath.startswith("$"):
+        raise ValueError(f"{context}.optionsJsonpath must be a JSONPath starting with '$'.")
+    options_raw = arg.get("options")
+    if options_raw is not None:
+        if not isinstance(options_raw, list):
+            raise ValueError(f"{context}.options must be a list when provided.")
+        for idx, item in enumerate(options_raw, 1):
+            if not str(item).strip():
+                raise ValueError(f"{context}.options[{idx}] must be a non-empty value.")
 
 
 def _validate_v2_tab(tab: dict[str, Any], source_path: Path, context: str) -> None:
@@ -211,6 +304,22 @@ def _validate_v2_tab(tab: dict[str, Any], source_path: Path, context: str) -> No
             _validate_v2_tab(child, source_path, f"{context}.children[{child_index}]")
 
 
+def _iter_v2_widgets(tab: dict[str, Any], context: str) -> list[tuple[str, dict[str, Any]]]:
+    results: list[tuple[str, dict[str, Any]]] = []
+    widgets = tab.get("widgets")
+    if isinstance(widgets, list):
+        for widget_index, widget in enumerate(widgets, 1):
+            if isinstance(widget, dict):
+                results.append((f"{context}.widgets[{widget_index}]", widget))
+    children = tab.get("children")
+    if isinstance(children, list):
+        for child_index, child in enumerate(children, 1):
+            if not isinstance(child, dict):
+                continue
+            results.extend(_iter_v2_widgets(child, f"{context}.children[{child_index}]"))
+    return results
+
+
 def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, context: str) -> None:
     _assert_allowed_keys(
         target,
@@ -223,6 +332,7 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
         raise ValueError(f"{context} in {source_path} is missing status object.")
     _assert_allowed_keys(status, {"cwd", "cmd", "timeoutSeconds"}, f"{context}.status in {source_path}")
 
+    log_streams: set[str] = set()
     logs = target.get("logs")
     if isinstance(logs, list):
         for idx, log in enumerate(logs, 1):
@@ -233,7 +343,16 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
                 {"stream", "title", "glob", "tailLines", "maxLineBytes", "pollMs", "encoding", "allowMissing"},
                 f"{context}.logs[{idx}] in {source_path}",
             )
+            stream_name = str(log.get("stream") or "").strip()
+            if not stream_name:
+                raise ValueError(f"{context}.logs[{idx}].stream in {source_path} must be a non-empty string.")
+            if stream_name in log_streams:
+                raise ValueError(
+                    f"{context}.logs[{idx}].stream in {source_path} duplicates stream '{stream_name}'."
+                )
+            log_streams.add(stream_name)
 
+    action_names: set[str] = set()
     actions = target.get("actions")
     if isinstance(actions, list):
         for idx, action in enumerate(actions, 1):
@@ -241,9 +360,41 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
                 raise ValueError(f"{context}.actions[{idx}] in {source_path} must be an object.")
             _assert_allowed_keys(
                 action,
-                {"name", "label", "cwd", "cmd", "timeoutSeconds", "confirm", "showOutputPanel", "mutex", "detached"},
+                {
+                    "name",
+                    "label",
+                    "cwd",
+                    "cmd",
+                    "timeoutSeconds",
+                    "confirm",
+                    "showOutputPanel",
+                    "mutex",
+                    "detached",
+                    "args",
+                },
                 f"{context}.actions[{idx}] in {source_path}",
             )
+            action_name = str(action.get("name") or "").strip()
+            if not action_name:
+                raise ValueError(f"{context}.actions[{idx}].name in {source_path} must be a non-empty string.")
+            if action_name in action_names:
+                raise ValueError(
+                    f"{context}.actions[{idx}].name in {source_path} duplicates action '{action_name}'."
+                )
+            action_names.add(action_name)
+            args_raw = action.get("args")
+            if args_raw is not None:
+                if not isinstance(args_raw, list):
+                    raise ValueError(f"{context}.actions[{idx}].args in {source_path} must be a list.")
+                for arg_index, arg in enumerate(args_raw, 1):
+                    if not isinstance(arg, dict):
+                        raise ValueError(
+                            f"{context}.actions[{idx}].args[{arg_index}] in {source_path} must be an object."
+                        )
+                    _validate_action_arg(
+                        arg,
+                        f"{context}.actions[{idx}].args[{arg_index}] in {source_path}",
+                    )
 
     ui = target.get("ui")
     if not isinstance(ui, dict):
@@ -257,6 +408,50 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
         if not isinstance(tab, dict):
             raise ValueError(f"{context}.ui.tabs[{tab_index}] in {source_path} must be an object.")
         _validate_v2_tab(tab, source_path, f"{context}.ui.tabs[{tab_index}]")
+        for widget_context, widget in _iter_v2_widgets(tab, f"{context}.ui.tabs[{tab_index}]"):
+            widget_type = str(widget.get("type") or "").strip().lower()
+            if widget_type == "log":
+                stream = str(widget.get("stream") or "").strip()
+                if not stream:
+                    raise ValueError(f"{widget_context}.stream in {source_path} must be a non-empty string.")
+                if stream not in log_streams:
+                    raise ValueError(
+                        f"{widget_context}.stream in {source_path} references unknown log stream '{stream}'."
+                    )
+            elif widget_type == "button":
+                action_name = str(widget.get("action") or "").strip()
+                if action_name and action_name not in action_names:
+                    raise ValueError(
+                        f"{widget_context}.action in {source_path} references unknown action '{action_name}'."
+                    )
+            elif widget_type == "profile_select":
+                action_name = str(widget.get("action") or "").strip()
+                if action_name and action_name not in action_names:
+                    raise ValueError(
+                        f"{widget_context}.action in {source_path} references unknown action '{action_name}'."
+                    )
+            elif widget_type == "config_editor":
+                show_action = str(widget.get("showAction") or "").strip()
+                set_action = str(widget.get("setAction") or "").strip()
+                if show_action and show_action not in action_names:
+                    raise ValueError(
+                        f"{widget_context}.showAction in {source_path} references unknown action '{show_action}'."
+                    )
+                if set_action and set_action not in action_names:
+                    raise ValueError(
+                        f"{widget_context}.setAction in {source_path} references unknown action '{set_action}'."
+                    )
+            elif widget_type == "config_file_select":
+                show_action = str(widget.get("showAction") or "").strip()
+                set_action = str(widget.get("setAction") or "").strip()
+                if show_action and show_action not in action_names:
+                    raise ValueError(
+                        f"{widget_context}.showAction in {source_path} references unknown action '{show_action}'."
+                    )
+                if set_action and set_action not in action_names:
+                    raise ValueError(
+                        f"{widget_context}.setAction in {source_path} references unknown action '{set_action}'."
+                    )
 
     action_output = target.get("actionOutput")
     if action_output is not None:
@@ -495,6 +690,82 @@ def _normalize_cmd(value: Any) -> list[str]:
     return result
 
 
+def _action_primary_arg(action: dict[str, Any]) -> dict[str, Any] | None:
+    args_raw = action.get("args")
+    if not isinstance(args_raw, list) or not args_raw:
+        return None
+    first = args_raw[0]
+    if not isinstance(first, dict):
+        return None
+    name = str(first.get("name") or "").strip()
+    if not name:
+        return None
+    return first
+
+
+def _action_arg_options(arg_spec: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+    options_raw = arg_spec.get("options")
+    if isinstance(options_raw, list):
+        return [str(item) for item in options_raw if str(item).strip()]
+    options_path = str(arg_spec.get("optionsJsonpath") or "").strip()
+    if options_path:
+        options_value = json_path_get(payload, options_path)
+        if isinstance(options_value, list):
+            return [str(item) for item in options_value if str(item).strip()]
+    return []
+
+
+def _validate_action_arg_value(raw_value: str, arg_spec: dict[str, Any], options: list[str]) -> tuple[str | None, str | None]:
+    name = str(arg_spec.get("name") or "value").strip() or "value"
+    required = bool(arg_spec.get("required", False))
+    arg_type = str(arg_spec.get("type") or "string").strip().lower()
+    pattern = str(arg_spec.get("pattern") or "").strip()
+    text = str(raw_value or "").strip()
+
+    if required and not text:
+        return None, f"{name}: value is required."
+    if not text:
+        return "", None
+
+    if options and text not in options:
+        return None, f"{name}: value must be one of available options."
+
+    if arg_type == "int":
+        try:
+            return str(int(text)), None
+        except Exception:
+            return None, f"{name}: value must be an integer."
+    if arg_type == "float":
+        try:
+            return str(float(text)), None
+        except Exception:
+            return None, f"{name}: value must be a number."
+    if arg_type == "bool":
+        lowered = text.lower()
+        if lowered in {"true", "1", "yes", "y"}:
+            return "true", None
+        if lowered in {"false", "0", "no", "n"}:
+            return "false", None
+        return None, f"{name}: value must be true/false."
+
+    if pattern:
+        try:
+            if re.search(pattern, text) is None:
+                return None, f"{name}: value does not match required pattern."
+        except re.error:
+            return None, f"{name}: invalid regex pattern in action metadata."
+
+    return text, None
+
+
+def _apply_action_placeholders(parts: list[str], values: dict[str, str]) -> list[str]:
+    result = list(parts)
+    for key, value in values.items():
+        token = "{" + str(key) + "}"
+        result = [part.replace(token, str(value)) for part in result]
+    return result
+
+
 def _normalize_v1_include(
     payload: dict[str, Any],
     source_path: Path,
@@ -555,7 +826,7 @@ def _normalize_v1_include(
                         "cmd": action_cmd,
                         "timeoutSeconds": float(command.get("timeoutSeconds", 120.0)),
                         "confirm": str(command.get("confirm") or ""),
-                        "showOutputPanel": bool(command.get("showOutputPanel", True)),
+                        "showOutputPanel": bool(command.get("showOutputPanel", False)),
                         "mutex": str(command.get("mutex") or ""),
                         "detached": bool(command.get("detached", False)),
                     }
@@ -694,6 +965,31 @@ def _normalize_v2_target(
             if not cmd:
                 raise ValueError(f"v2 target '{tid}' in {source_path} action '{name}' has empty cmd.")
             action_cwd = str(action.get("cwd") or status_cwd).strip()
+            normalized_args: list[dict[str, Any]] = []
+            args_raw = action.get("args")
+            if isinstance(args_raw, list):
+                for arg in args_raw:
+                    if not isinstance(arg, dict):
+                        continue
+                    arg_name = str(arg.get("name") or "").strip()
+                    if not arg_name:
+                        continue
+                    options_raw = arg.get("options")
+                    normalized_options = None
+                    if isinstance(options_raw, list):
+                        normalized_options = [str(item) for item in options_raw if str(item).strip()]
+                    normalized_args.append(
+                        {
+                            "name": arg_name,
+                            "label": str(arg.get("label") or arg_name),
+                            "required": bool(arg.get("required", False)),
+                            "type": str(arg.get("type") or "string").strip().lower(),
+                            "placeholder": str(arg.get("placeholder") or ""),
+                            "pattern": str(arg.get("pattern") or ""),
+                            "optionsJsonpath": str(arg.get("optionsJsonpath") or ""),
+                            "options": normalized_options,
+                        }
+                    )
             actions.append(
                 {
                     "name": name,
@@ -702,9 +998,10 @@ def _normalize_v2_target(
                     "cmd": cmd,
                     "timeoutSeconds": float(action.get("timeoutSeconds", 120.0)),
                     "confirm": str(action.get("confirm") or ""),
-                    "showOutputPanel": bool(action.get("showOutputPanel", True)),
+                    "showOutputPanel": bool(action.get("showOutputPanel", False)),
                     "mutex": str(action.get("mutex") or ""),
                     "detached": bool(action.get("detached", False)),
+                    "args": normalized_args,
                 }
             )
 
@@ -1002,88 +1299,127 @@ class MonitorApp:
         self._schedule_refresh()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _window_title(self) -> str:
+        explicit_title = str(self.config.get("title") or "").strip()
+        if explicit_title:
+            return explicit_title
+
+        labels: list[str] = []
+        for target in self.targets:
+            label = str(target.get("name") or target.get("title") or target.get("id") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+
+        if len(labels) == 1:
+            return labels[0]
+        if labels:
+            return " + ".join(labels) + " Monitor"
+        return "Monitor"
+
     def _build_ui(self) -> None:
-        self.root.title("Fixture / Bridge Monitor")
+        self.root.title(self._window_title())
         self.root.geometry("1440x900")
+        self._build_menu()
 
         top = ttk.Frame(self.root)
         top.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        target_notebook = ttk.Notebook(top)
-        target_notebook.pack(fill=tk.BOTH, expand=True)
-
-        for target in self.targets:
-            tid = str(target.get("id") or "")
-            title = str(target.get("title") or tid)
-            frame = ttk.Frame(target_notebook)
-            target_notebook.add(frame, text=title)
-
-            banner_var = tk.StringVar(value="")
-            banner = ttk.Label(frame, textvariable=banner_var, foreground="#b00020")
-            banner.pack(fill=tk.X, padx=8, pady=(6, 0))
-
-            tabs = ttk.Notebook(frame)
-            tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=6)
-
-            runtime = {
-                "target": target,
-                "bannerVar": banner_var,
-                "bindings": [],
-                "profileSelectors": [],
-                "fileViewers": [],
-                "configEditors": [],
-                "logWidgetsByStream": {},
-                "actionOutputWidget": None,
-                "actionOutputPath": None,
-                "lastGoodStatus": {},
-                "lastStatusError": None,
-                "nextRefreshAt": 0.0,
-                "tabsWidget": tabs,
-                "actionOutputTab": None,
-            }
-            self.target_runtime[tid] = runtime
-
-            ui = target.get("ui") if isinstance(target.get("ui"), dict) else {}
-            ui_tabs = ui.get("tabs") if isinstance(ui.get("tabs"), list) else []
-            self._build_tabs(tabs, runtime, ui_tabs)
-
-            action_output_tab = ttk.Frame(tabs)
-            tabs.add(action_output_tab, text="Action Output")
-            runtime["actionOutputTab"] = action_output_tab
-            action_output_root = self.config_path.parent / "action-output"
-            action_output_root.mkdir(parents=True, exist_ok=True)
-            action_output_path = (action_output_root / f"{tid}.log").resolve()
-            runtime["actionOutputPath"] = action_output_path
-
-            toolbar = ttk.Frame(action_output_tab)
-            toolbar.pack(fill=tk.X, padx=6, pady=(6, 2))
-            action_output_path_var = tk.StringVar(value=str(action_output_path))
-            ttk.Label(toolbar, text="Source:").pack(side=tk.LEFT)
-            ttk.Label(toolbar, textvariable=action_output_path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
-            ttk.Button(toolbar, text="Open", command=lambda var=action_output_path_var: self._open_file_path(var.get())).pack(
-                side=tk.RIGHT, padx=(6, 0)
-            )
-            ttk.Button(toolbar, text="Copy", command=lambda var=action_output_path_var: self._copy_to_clipboard(var.get())).pack(
-                side=tk.RIGHT
-            )
-            ttk.Button(toolbar, text="Clear", command=lambda target_id=tid: self._clear_action_output(target_id)).pack(
-                side=tk.RIGHT, padx=(0, 6)
-            )
-
-            action_text = tk.Text(action_output_tab, wrap=tk.NONE, height=10)
-            action_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
-            runtime["actionOutputWidget"] = action_text
-            action_output_cfg = target.get("actionOutput") if isinstance(target.get("actionOutput"), dict) else {}
-            runtime["actionOutputBuffer"] = ActionOutputBuffer(
-                max_lines=int(action_output_cfg.get("maxLines", DEFAULT_ACTION_OUTPUT_MAX_LINES)),
-                max_bytes=int(action_output_cfg.get("maxBytes", DEFAULT_ACTION_OUTPUT_MAX_BYTES)),
-            )
+        if not self.targets:
+            ttk.Label(top, text="No targets configured.").pack(fill=tk.X, padx=8, pady=8)
+        elif len(self.targets) == 1:
+            # Save vertical space by skipping the top-level target tab when only one target is present.
+            self._build_target_panel(top, self.targets[0])
+        else:
+            target_notebook = ttk.Notebook(top)
+            target_notebook.pack(fill=tk.BOTH, expand=True)
+            for target in self.targets:
+                tid = str(target.get("id") or "")
+                title = str(target.get("title") or tid)
+                frame = ttk.Frame(target_notebook)
+                target_notebook.add(frame, text=title)
+                self._build_target_panel(frame, target)
 
         footer = ttk.Frame(self.root)
         footer.pack(fill=tk.X, padx=10, pady=(0, 10))
         ttk.Label(footer, text="Console:").pack(side=tk.LEFT)
         ttk.Label(footer, textvariable=self.console_var).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(footer, text="Refresh Now", command=self._refresh_async).pack(side=tk.RIGHT)
+
+    def _build_menu(self) -> None:
+        menu_bar = tk.Menu(self.root)
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Relaunch", command=self._relaunch_app)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+        self.root.config(menu=menu_bar)
+
+    def _build_target_panel(self, parent: ttk.Frame, target: dict[str, Any]) -> None:
+        tid = str(target.get("id") or "")
+
+        banner_var = tk.StringVar(value="")
+        banner = ttk.Label(parent, textvariable=banner_var, foreground="#b00020")
+        banner.pack(fill=tk.X, padx=8, pady=(6, 0))
+
+        tabs = ttk.Notebook(parent)
+        tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=6)
+
+        runtime = {
+            "target": target,
+            "bannerVar": banner_var,
+            "bindings": [],
+            "profileSelectors": [],
+            "actionSelectors": [],
+            "rowsTables": [],
+            "fileViewers": [],
+            "configEditors": [],
+            "configFileSelectors": [],
+            "logWidgetsByStream": {},
+            "actionOutputWidget": None,
+            "actionOutputPath": None,
+            "lastGoodStatus": {},
+            "lastStatusError": None,
+            "nextRefreshAt": 0.0,
+            "tabsWidget": tabs,
+            "actionOutputTab": None,
+        }
+        self.target_runtime[tid] = runtime
+
+        ui = target.get("ui") if isinstance(target.get("ui"), dict) else {}
+        ui_tabs = ui.get("tabs") if isinstance(ui.get("tabs"), list) else []
+        self._build_tabs(tabs, runtime, ui_tabs)
+
+        action_output_tab = ttk.Frame(tabs)
+        tabs.add(action_output_tab, text="Action Output")
+        runtime["actionOutputTab"] = action_output_tab
+        action_output_root = self.config_path.parent / "action-output"
+        action_output_root.mkdir(parents=True, exist_ok=True)
+        action_output_path = (action_output_root / f"{tid}.log").resolve()
+        runtime["actionOutputPath"] = action_output_path
+
+        toolbar = ttk.Frame(action_output_tab)
+        toolbar.pack(fill=tk.X, padx=6, pady=(6, 2))
+        action_output_path_var = tk.StringVar(value=str(action_output_path))
+        ttk.Label(toolbar, text="Source:").pack(side=tk.LEFT)
+        ttk.Label(toolbar, textvariable=action_output_path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        ttk.Button(toolbar, text="Open", command=lambda var=action_output_path_var: self._open_file_path(var.get())).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(toolbar, text="Copy", command=lambda var=action_output_path_var: self._copy_to_clipboard(var.get())).pack(
+            side=tk.RIGHT
+        )
+        ttk.Button(toolbar, text="Clear", command=lambda target_id=tid: self._clear_action_output(target_id)).pack(
+            side=tk.RIGHT, padx=(0, 6)
+        )
+
+        action_text = tk.Text(action_output_tab, wrap=tk.NONE, height=10)
+        action_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
+        runtime["actionOutputWidget"] = action_text
+        action_output_cfg = target.get("actionOutput") if isinstance(target.get("actionOutput"), dict) else {}
+        runtime["actionOutputBuffer"] = ActionOutputBuffer(
+            max_lines=int(action_output_cfg.get("maxLines", DEFAULT_ACTION_OUTPUT_MAX_LINES)),
+            max_bytes=int(action_output_cfg.get("maxBytes", DEFAULT_ACTION_OUTPUT_MAX_BYTES)),
+        )
 
     def _build_tabs(self, tabs_widget: ttk.Notebook, runtime: dict[str, Any], tabs: list[dict[str, Any]]) -> None:
         for tab in tabs:
@@ -1132,7 +1468,7 @@ class MonitorApp:
             self._build_one_widget(parent, runtime, widget_items[0])
             return
 
-        splitter_widget_types = {"log", "action_map", "file_view", "config_editor"}
+        splitter_widget_types = {"log", "action_map", "file_view", "rows_table"}
         uses_splitter = any(str(item.get("type") or "").strip().lower() in splitter_widget_types for item in widget_items)
         if uses_splitter:
             pane = ttk.Panedwindow(parent, orient=tk.VERTICAL)
@@ -1172,6 +1508,9 @@ class MonitorApp:
         if widget_type == "table":
             self._build_widget_table(parent, runtime, widget)
             return
+        if widget_type == "rows_table":
+            self._build_widget_rows_table(parent, runtime, widget)
+            return
         if widget_type == "log":
             self._build_widget_log(parent, runtime, widget)
             return
@@ -1187,11 +1526,17 @@ class MonitorApp:
         if widget_type == "action_select":
             self._build_widget_action_select(parent, runtime, widget)
             return
+        if widget_type == "text_block":
+            self._build_widget_text_block(parent, runtime, widget)
+            return
         if widget_type == "file_view":
             self._build_widget_file_view(parent, runtime, widget)
             return
         if widget_type == "config_editor":
             self._build_widget_config_editor(parent, runtime, widget)
+            return
+        if widget_type == "config_file_select":
+            self._build_widget_config_file_select(parent, runtime, widget)
             return
 
         unknown = ttk.Label(parent, text=f"Unsupported widget type: {widget_type or '(blank)'}")
@@ -1228,6 +1573,78 @@ class MonitorApp:
             value_var = tk.StringVar(value="-")
             ttk.Label(frame, textvariable=value_var).grid(row=1, column=col, sticky="w", padx=6, pady=(2, 6))
             runtime["bindings"].append((path, value_var))
+
+    def _build_widget_rows_table(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Rows"))
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6, anchor="n")
+
+        rows_path = str(widget.get("rowsJsonpath") or "").strip()
+        columns = widget.get("columns")
+        if not rows_path or not isinstance(columns, list):
+            return
+
+        normalized_columns: list[dict[str, str]] = []
+        for index, item in enumerate(columns):
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            key = str(item.get("key") or "").strip()
+            jsonpath = str(item.get("jsonpath") or "").strip()
+            if not label or (not key and not jsonpath):
+                continue
+            normalized_columns.append(
+                {
+                    "id": f"col{index + 1}",
+                    "label": label,
+                    "key": key,
+                    "jsonpath": jsonpath,
+                }
+            )
+        if not normalized_columns:
+            return
+
+        table_wrap = ttk.Frame(frame)
+        table_wrap.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
+        table_wrap.rowconfigure(0, weight=1)
+        table_wrap.columnconfigure(0, weight=1)
+
+        x_scroll = ttk.Scrollbar(table_wrap, orient=tk.HORIZONTAL)
+        y_scroll = ttk.Scrollbar(table_wrap, orient=tk.VERTICAL)
+        tree = ttk.Treeview(
+            table_wrap,
+            columns=[column["id"] for column in normalized_columns],
+            show="headings",
+            xscrollcommand=x_scroll.set,
+            yscrollcommand=y_scroll.set,
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        x_scroll.configure(command=tree.xview)
+        y_scroll.configure(command=tree.yview)
+
+        for column in normalized_columns:
+            label = column["label"]
+            width = max(110, min(360, len(label) * 9 + 36))
+            tree.heading(column["id"], text=label)
+            tree.column(column["id"], anchor="w", width=width, stretch=True)
+
+        empty_text = str(widget.get("emptyText") or "(no rows)")
+        empty_var = tk.StringVar(value=empty_text)
+        ttk.Label(frame, textvariable=empty_var).pack(fill=tk.X, padx=6, pady=(0, 4))
+
+        max_rows = max(1, int(widget.get("maxRows", 200)))
+        runtime["rowsTables"].append(
+            {
+                "rowsPath": rows_path,
+                "columns": normalized_columns,
+                "tree": tree,
+                "emptyVar": empty_var,
+                "emptyText": empty_text,
+                "maxRows": max_rows,
+                "lastSignature": None,
+            }
+        )
 
     def _build_widget_log(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or widget.get("stream") or "Log"))
@@ -1314,8 +1731,10 @@ class MonitorApp:
         include_commands = bool(widget.get("includeCommands", True))
         show_action_name = bool(widget.get("showActionName", True))
         include_prefix = str(widget.get("includePrefix") or "").strip()
+        include_regex = str(widget.get("includeRegex") or "").strip()
         target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
         actions = target.get("actions") if isinstance(target.get("actions"), list) else []
+        matcher = re.compile(include_regex) if include_regex else None
 
         text = tk.Text(frame, wrap=tk.NONE, height=12)
         text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
@@ -1325,6 +1744,8 @@ class MonitorApp:
                 continue
             name = str(item.get("name") or "").strip()
             if include_prefix and not name.startswith(include_prefix):
+                continue
+            if matcher and matcher.search(name) is None:
                 continue
             label = str(item.get("label") or name).strip()
             cmd = _normalize_cmd(item.get("cmd"))
@@ -1382,31 +1803,139 @@ class MonitorApp:
         if options:
             selected_var.set(options[0])
 
+        arg_row = ttk.Frame(frame)
+        arg_row.pack(fill=tk.X, padx=8, pady=(0, 6))
+        arg_label_var = tk.StringVar(value="")
+        arg_status_var = tk.StringVar(value="")
+        arg_value_var = tk.StringVar(value="")
+        arg_label_widget = ttk.Label(arg_row, textvariable=arg_label_var, width=24)
+        arg_entry_widget = ttk.Entry(arg_row, textvariable=arg_value_var, width=40)
+        arg_combo_widget = ttk.Combobox(arg_row, textvariable=arg_value_var, state="readonly", width=40)
+        arg_label_widget.pack_forget()
+        arg_entry_widget.pack_forget()
+        arg_combo_widget.pack_forget()
+        ttk.Label(frame, textvariable=arg_status_var).pack(fill=tk.X, padx=8, pady=(0, 2))
+
+        selector: dict[str, Any] = {
+            "selectedVar": selected_var,
+            "labelToName": label_to_name,
+            "eligible": eligible,
+            "argRow": arg_row,
+            "argLabelVar": arg_label_var,
+            "argStatusVar": arg_status_var,
+            "argValueVar": arg_value_var,
+            "argLabelWidget": arg_label_widget,
+            "argEntryWidget": arg_entry_widget,
+            "argComboWidget": arg_combo_widget,
+            "currentArgSpec": None,
+            "currentArgOptions": [],
+            "lastPayload": {},
+        }
+
         def run_selected() -> None:
             selected = str(selected_var.get() or "").strip()
             action_name = label_to_name.get(selected, "")
             if not action_name:
                 self.console_var.set("No action selected.")
                 return
-            self._invoke_action(target_id, action_name)
+            action = next((item for item in eligible if str(item.get("name") or "") == action_name), None)
+            if not isinstance(action, dict):
+                self.console_var.set("Selected action is unavailable.")
+                return
+            action_args: dict[str, str] = {}
+            arg_spec = _action_primary_arg(action)
+            if arg_spec is not None:
+                raw_value = str(arg_value_var.get() or "")
+                options_local = selector.get("currentArgOptions")
+                options_for_validation = options_local if isinstance(options_local, list) else []
+                normalized_value, error_message = _validate_action_arg_value(
+                    raw_value,
+                    arg_spec,
+                    options_for_validation,
+                )
+                if error_message:
+                    arg_status_var.set(error_message)
+                    self.console_var.set(error_message)
+                    return
+                arg_name = str(arg_spec.get("name") or "value").strip() or "value"
+                action_args[arg_name] = normalized_value or ""
+            self._invoke_action(target_id, action_name, action_args=action_args or None)
 
         ttk.Button(row, text=run_label, command=run_selected).pack(side=tk.LEFT, padx=(8, 0))
         if show_command:
             command_var = tk.StringVar(value="")
             ttk.Label(frame, textvariable=command_var).pack(fill=tk.X, padx=8, pady=(0, 6))
+        else:
+            command_var = tk.StringVar(value="")
 
-            def update_preview(*_: Any) -> None:
-                selected = str(selected_var.get() or "").strip()
-                action_name = label_to_name.get(selected, "")
-                action = next((item for item in eligible if str(item.get("name") or "") == action_name), None)
-                if not isinstance(action, dict):
+        def update_selector(payload: dict[str, Any] | None = None) -> None:
+            payload_obj = payload if isinstance(payload, dict) else {}
+            selector["lastPayload"] = payload_obj
+            selected = str(selected_var.get() or "").strip()
+            action_name = label_to_name.get(selected, "")
+            action = next((item for item in eligible if str(item.get("name") or "") == action_name), None)
+            if not isinstance(action, dict):
+                if show_command:
                     command_var.set("-")
-                    return
-                cmd = _normalize_cmd(action.get("cmd"))
+                arg_status_var.set("")
+                selector["currentArgSpec"] = None
+                selector["currentArgOptions"] = []
+                arg_label_widget.pack_forget()
+                arg_entry_widget.pack_forget()
+                arg_combo_widget.pack_forget()
+                return
+
+            cmd = _normalize_cmd(action.get("cmd"))
+            if show_command:
                 command_var.set(" ".join(cmd) if cmd else "-")
 
-            selected_var.trace_add("write", update_preview)
-            update_preview()
+            arg_spec = _action_primary_arg(action)
+            selector["currentArgSpec"] = arg_spec
+            if arg_spec is None:
+                arg_status_var.set("")
+                selector["currentArgOptions"] = []
+                arg_label_widget.pack_forget()
+                arg_entry_widget.pack_forget()
+                arg_combo_widget.pack_forget()
+                return
+
+            arg_name = str(arg_spec.get("name") or "value").strip() or "value"
+            arg_label = str(arg_spec.get("label") or arg_name)
+            arg_label_var.set(arg_label + ":")
+            arg_options = _action_arg_options(arg_spec, payload_obj)
+            selector["currentArgOptions"] = arg_options
+            current_value = str(arg_value_var.get() or "").strip()
+            arg_label_widget.pack(side=tk.LEFT, padx=(0, 6))
+            if arg_options:
+                arg_entry_widget.pack_forget()
+                arg_combo_widget["values"] = arg_options
+                if current_value not in arg_options:
+                    current_value = arg_options[0]
+                arg_value_var.set(current_value)
+                arg_combo_widget.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            else:
+                arg_combo_widget.pack_forget()
+                if not current_value:
+                    placeholder = str(arg_spec.get("placeholder") or "").strip()
+                    if placeholder:
+                        arg_value_var.set(placeholder)
+                arg_entry_widget.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            arg_status_var.set("")
+
+        selected_var.trace_add("write", lambda *_: update_selector(selector.get("lastPayload")))
+        update_selector({})
+        selector["refreshFn"] = update_selector
+        runtime["actionSelectors"].append(selector)
+
+    def _build_widget_text_block(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Notes"))
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        text_value = str(widget.get("text") or "").strip()
+        height = max(4, int(widget.get("height", 8)))
+        text = tk.Text(frame, wrap=tk.WORD, height=height)
+        text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        text.insert(tk.END, (text_value or "(empty)") + "\n")
+        text.configure(state=tk.DISABLED)
 
     def _build_widget_file_view(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "File"))
@@ -1525,6 +2054,287 @@ class MonitorApp:
 
         runtime["configEditors"].append(editor)
 
+    def _build_widget_config_file_select(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Active File"))
+        frame.pack(fill=tk.X, padx=8, pady=6, anchor="n")
+
+        empty_label = str(widget.get("emptyLabel") or "Select file")
+        apply_label = str(widget.get("applyLabel") or "Set")
+        reload_label = str(widget.get("reloadLabel") or "Reload")
+
+        row = ttk.Frame(frame)
+        row.pack(fill=tk.X, padx=8, pady=(6, 2))
+        current_var = tk.StringVar(value="-")
+        selected_var = tk.StringVar(value="")
+        status_var = tk.StringVar(value="")
+        path_var = tk.StringVar(value="-")
+
+        ttk.Label(row, text="Current:").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(row, textvariable=current_var).pack(side=tk.LEFT, padx=(0, 12))
+        combo = ttk.Combobox(row, textvariable=selected_var, state="readonly", width=28)
+        combo["values"] = [empty_label]
+        combo.set(empty_label)
+        combo.pack(side=tk.LEFT, padx=(0, 8), fill=tk.X, expand=True)
+        apply_button = ttk.Button(row, text=apply_label)
+        apply_button.pack(side=tk.LEFT)
+
+        path_row = ttk.Frame(frame)
+        path_row.pack(fill=tk.X, padx=8, pady=(0, 2))
+        ttk.Label(path_row, text="Path:").pack(side=tk.LEFT)
+        ttk.Label(path_row, textvariable=path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        ttk.Button(path_row, text="Open", command=lambda var=path_var: self._open_file_path(var.get())).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(path_row, text="Copy", command=lambda var=path_var: self._copy_to_clipboard(var.get())).pack(side=tk.RIGHT)
+
+        status_row = ttk.Frame(frame)
+        status_row.pack(fill=tk.X, padx=8, pady=(0, 4))
+        ttk.Label(status_row, textvariable=status_var).pack(side=tk.LEFT)
+
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+        selector: dict[str, Any] = {
+            "targetId": target_id,
+            "showAction": str(widget.get("showAction") or "").strip(),
+            "setAction": str(widget.get("setAction") or "").strip(),
+            "key": str(widget.get("key") or "").strip(),
+            "pathKey": str(widget.get("pathKey") or "").strip(),
+            "emptyLabel": empty_label,
+            "currentVar": current_var,
+            "selectedVar": selected_var,
+            "pathVar": path_var,
+            "statusVar": status_var,
+            "combo": combo,
+            "applyButton": apply_button,
+            "optionsMap": {},
+            "loading": False,
+            "needsRefresh": True,
+            "hasLoadedOnce": False,
+            "lastSignature": None,
+            "lastPathIdentity": "",
+        }
+        apply_button.configure(
+            command=lambda tid=target_id, item=selector: self._set_config_file_selector_value(tid, item),
+        )
+        ttk.Button(
+            status_row,
+            text=reload_label,
+            command=lambda tid=target_id, item=selector: self._refresh_config_file_selector_async(tid, item, force=True),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+        runtime["configFileSelectors"].append(selector)
+
+    def _refresh_config_file_selectors(self, runtime: dict[str, Any]) -> None:
+        selectors = runtime.get("configFileSelectors")
+        if not isinstance(selectors, list):
+            return
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+        for selector in selectors:
+            if not isinstance(selector, dict):
+                continue
+            self._refresh_config_file_selector_async(target_id, selector, show_loading=False)
+
+    def _refresh_config_file_selector_async(
+        self,
+        target_id: str,
+        selector: dict[str, Any],
+        *,
+        force: bool = False,
+        show_loading: bool | None = None,
+    ) -> None:
+        if force:
+            selector["needsRefresh"] = True
+        if not bool(selector.get("needsRefresh", False)):
+            return
+        if bool(selector.get("loading", False)):
+            return
+        selector["loading"] = True
+        selector["needsRefresh"] = False
+        if show_loading is None:
+            show_loading = not bool(selector.get("hasLoadedOnce", False))
+        status_var = selector.get("statusVar")
+        if show_loading:
+            self._set_stringvar_if_changed(status_var, "Loading...")
+        thread = threading.Thread(target=self._load_config_file_selector_data, args=(target_id, selector), daemon=True)
+        thread.start()
+
+    def _load_config_file_selector_data(self, target_id: str, selector: dict[str, Any]) -> None:
+        show_action = str(selector.get("showAction") or "").strip()
+        rc, stdout, stderr, command_error = self._run_named_action_command(target_id, show_action)
+        if command_error:
+            self.root.after(
+                0,
+                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, command_error),
+            )
+            return
+        if rc != 0:
+            message = (stderr or stdout or f"show action failed rc={rc}").strip()
+            self.root.after(
+                0,
+                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, message),
+            )
+            return
+
+        payload, parse_error = try_extract_json_object(stdout)
+        if payload is None:
+            self.root.after(
+                0,
+                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, parse_error),
+            )
+            return
+
+        key = str(selector.get("key") or "").strip()
+        path_key = str(selector.get("pathKey") or "").strip()
+        current_text = ""
+        options_text: list[str] = []
+        options_map: dict[str, Any] = {}
+        path_value = ""
+
+        entries = payload.get("entries")
+        if isinstance(entries, list):
+            match = next(
+                (
+                    item
+                    for item in entries
+                    if isinstance(item, dict) and str(item.get("key") or "").strip() == key
+                ),
+                None,
+            )
+            if isinstance(match, dict):
+                current_raw = match.get("value")
+                current_text = self._config_editor_value_text(current_raw)
+                allowed_raw = match.get("allowed")
+                if isinstance(allowed_raw, list):
+                    for item in allowed_raw:
+                        option_text = self._config_editor_value_text(item)
+                        if option_text in options_map:
+                            continue
+                        options_text.append(option_text)
+                        options_map[option_text] = item
+                if not options_text and current_text:
+                    options_text = [current_text]
+                    options_map[current_text] = current_raw
+
+        path_entries = payload.get("paths")
+        if isinstance(path_entries, list):
+            path_match = next(
+                (
+                    item
+                    for item in path_entries
+                    if isinstance(item, dict) and str(item.get("key") or "").strip() == path_key
+                ),
+                None,
+            )
+            if isinstance(path_match, dict):
+                path_value = str(path_match.get("value") or "").strip()
+
+        self.root.after(
+            0,
+            lambda: self._finalize_config_file_selector_load(
+                selector,
+                current_text,
+                path_value,
+                options_text,
+                options_map,
+                "",
+            ),
+        )
+
+    def _finalize_config_file_selector_load(
+        self,
+        selector: dict[str, Any],
+        current_text: str,
+        path_value: str,
+        options_text: list[str],
+        options_map: dict[str, Any],
+        error_message: str,
+    ) -> None:
+        selector["loading"] = False
+        status_var = selector.get("statusVar")
+        if error_message:
+            self._set_stringvar_if_changed(status_var, error_message)
+            return
+
+        selector["hasLoadedOnce"] = True
+        self._set_stringvar_if_changed(status_var, "Ready.")
+
+        path_var = selector.get("pathVar")
+        display_path = path_value or "-"
+        self._set_stringvar_if_changed(path_var, display_path)
+        selector["lastPathIdentity"] = self._path_identity(path_value)
+
+        signature = (current_text, tuple(options_text), selector.get("lastPathIdentity"))
+        if signature == selector.get("lastSignature"):
+            return
+        selector["lastSignature"] = signature
+        selector["optionsMap"] = dict(options_map)
+
+        current_var = selector.get("currentVar")
+        self._set_stringvar_if_changed(current_var, current_text or "-")
+
+        combo = selector.get("combo")
+        selected_var = selector.get("selectedVar")
+        empty_label = str(selector.get("emptyLabel") or "Select file")
+        apply_button = selector.get("applyButton")
+        has_options = len(options_text) > 0
+        values = options_text if has_options else [empty_label]
+        if isinstance(combo, ttk.Combobox):
+            combo["values"] = values
+        if isinstance(selected_var, tk.StringVar):
+            selected = str(selected_var.get() or "").strip()
+            if has_options:
+                if selected in options_text:
+                    pass
+                elif current_text in options_text:
+                    selected_var.set(current_text)
+                else:
+                    selected_var.set(options_text[0])
+            else:
+                selected_var.set(empty_label)
+        if isinstance(apply_button, ttk.Button):
+            apply_button.configure(state=(tk.NORMAL if has_options else tk.DISABLED))
+
+    def _set_config_file_selector_value(self, target_id: str, selector: dict[str, Any]) -> None:
+        selected_var = selector.get("selectedVar")
+        status_var = selector.get("statusVar")
+        empty_label = str(selector.get("emptyLabel") or "Select file")
+        selected_text = str(selected_var.get() if isinstance(selected_var, tk.StringVar) else "").strip()
+        if not selected_text or selected_text == empty_label:
+            self._set_stringvar_if_changed(status_var, "Select a value.")
+            return
+
+        options_map_raw = selector.get("optionsMap")
+        options_map = options_map_raw if isinstance(options_map_raw, dict) else {}
+        selected_value = options_map.get(selected_text, selected_text)
+        key = str(selector.get("key") or "").strip()
+        if not key:
+            self._set_stringvar_if_changed(status_var, "Selector key is missing.")
+            return
+
+        set_value = self._config_editor_set_arg(selected_value)
+        set_action = str(selector.get("setAction") or "").strip()
+        self._set_stringvar_if_changed(status_var, "saving...")
+
+        def run_set() -> None:
+            rc, stdout, stderr, command_error = self._run_named_action_command(
+                target_id,
+                set_action,
+                replacements={"key": key, "value": set_value},
+            )
+            if command_error:
+                self.root.after(0, lambda: self._set_stringvar_if_changed(status_var, command_error))
+                return
+            if rc != 0:
+                message = (stderr or stdout or f"set failed rc={rc}").strip()
+                first_line = message.splitlines()[0] if message else f"set failed rc={rc}"
+                self.root.after(0, lambda: self._set_stringvar_if_changed(status_var, first_line))
+                return
+            self._mark_target_config_widgets_for_refresh(target_id)
+            self.root.after(0, lambda: self._refresh_target_config_widgets(target_id, show_loading=False))
+            self._refresh_async()
+
+        threading.Thread(target=run_set, daemon=True).start()
+
     def _find_target_action(self, target: dict[str, Any], action_name: str) -> dict[str, Any] | None:
         actions = target.get("actions")
         if not isinstance(actions, list):
@@ -1605,8 +2415,9 @@ class MonitorApp:
                 if path_value is not None:
                     path_var = editor.get("pathVar")
                     self._set_stringvar_if_changed(path_var, path_value or "-")
-                    if path_value != str(editor.get("lastPathValue") or ""):
-                        editor["lastPathValue"] = path_value
+                    path_identity = self._path_identity(path_value)
+                    if path_identity != str(editor.get("lastPathValue") or ""):
+                        editor["lastPathValue"] = path_identity
                         editor["needsRefresh"] = True
             self._refresh_config_editor_async(target_id, editor, show_loading=False)
 
@@ -1672,6 +2483,7 @@ class MonitorApp:
         self.root.after(0, lambda: self._finalize_config_editor_load(editor, filtered, path_value, ""))
 
     def _filter_config_editor_entries(self, entries: list[Any], editor: dict[str, Any]) -> list[dict[str, Any]]:
+        path_key = str(editor.get("pathKey") or "").strip()
         include_prefix = str(editor.get("includePrefix") or "").strip()
         include_keys_raw = editor.get("includeKeys")
         include_keys = set(include_keys_raw) if isinstance(include_keys_raw, set) else set()
@@ -1686,6 +2498,9 @@ class MonitorApp:
             key = str(item.get("key") or "").strip()
             if not key:
                 continue
+            file_key = str(item.get("fileKey") or "").strip()
+            if path_key and not include_prefix and not include_keys and file_key and file_key != path_key:
+                continue
             if include_prefix and not key.startswith(include_prefix):
                 continue
             if include_keys and key not in include_keys:
@@ -1695,8 +2510,6 @@ class MonitorApp:
             if settable_only and bool(item.get("pathEntry", False)):
                 continue
             filtered.append(item)
-
-        filtered.sort(key=lambda item: str(item.get("key") or ""))
         return filtered
 
     def _finalize_config_editor_load(
@@ -1719,7 +2532,7 @@ class MonitorApp:
         path_var = editor.get("pathVar")
         if isinstance(path_var, tk.StringVar) and path_value:
             self._set_stringvar_if_changed(path_var, path_value)
-            editor["lastPathValue"] = path_value
+            editor["lastPathValue"] = self._path_identity(path_value)
         entries_signature = self._config_editor_entries_signature(entries)
         if entries_signature == editor.get("lastEntriesSignature"):
             return
@@ -1734,13 +2547,14 @@ class MonitorApp:
             value_type = str(entry.get("valueType") or "")
             constraint = str(entry.get("constraint") or "")
             path_entry = bool(entry.get("pathEntry", False))
+            file_key = str(entry.get("fileKey") or "")
             allowed_raw = entry.get("allowed")
             allowed = (
                 tuple(self._config_editor_value_text(item) for item in allowed_raw)
                 if isinstance(allowed_raw, list)
                 else ()
             )
-            signature.append((key, value, value_type, constraint, path_entry, allowed))
+            signature.append((key, value, value_type, constraint, path_entry, file_key, allowed))
         return tuple(signature)
 
     def _render_config_editor_rows(self, editor: dict[str, Any], entries: list[dict[str, Any]]) -> None:
@@ -1872,8 +2686,8 @@ class MonitorApp:
                 self.root.after(0, lambda: validation_var.set(first_line))
                 return
             self.root.after(0, lambda: validation_var.set("saved"))
-            editor["needsRefresh"] = True
-            self.root.after(0, lambda: self._refresh_config_editor_async(target_id, editor, force=True))
+            self._mark_target_config_widgets_for_refresh(target_id)
+            self.root.after(0, lambda: self._refresh_target_config_widgets(target_id, show_loading=False))
             self._refresh_async()
 
         threading.Thread(target=run_set, daemon=True).start()
@@ -1984,6 +2798,55 @@ class MonitorApp:
             return
         var.set(text)
 
+    def _path_identity(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        normalized = os.path.normpath(text)
+        if os.name == "nt":
+            normalized = os.path.normcase(normalized)
+        return normalized
+
+    def _mark_target_config_widgets_for_refresh(self, target_id: str) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if runtime is None:
+            return
+        editors = runtime.get("configEditors")
+        if isinstance(editors, list):
+            for editor in editors:
+                if isinstance(editor, dict):
+                    editor["needsRefresh"] = True
+        selectors = runtime.get("configFileSelectors")
+        if isinstance(selectors, list):
+            for selector in selectors:
+                if isinstance(selector, dict):
+                    selector["needsRefresh"] = True
+
+    def _refresh_target_config_widgets(self, target_id: str, *, show_loading: bool = False) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if runtime is None:
+            return
+        selectors = runtime.get("configFileSelectors")
+        if isinstance(selectors, list):
+            for selector in selectors:
+                if isinstance(selector, dict):
+                    self._refresh_config_file_selector_async(
+                        target_id,
+                        selector,
+                        force=True,
+                        show_loading=show_loading,
+                    )
+        editors = runtime.get("configEditors")
+        if isinstance(editors, list):
+            for editor in editors:
+                if isinstance(editor, dict):
+                    self._refresh_config_editor_async(
+                        target_id,
+                        editor,
+                        force=True,
+                        show_loading=show_loading,
+                    )
+
     def _config_editor_constraint_error(self, value: Any, constraint: str) -> str | None:
         text = str(constraint or "").strip()
         if not text:
@@ -2008,15 +2871,25 @@ class MonitorApp:
             self.console_var.set("No file path available.")
             return
         path = Path(candidate)
+        open_path = path
+        used_fallback = False
         if not path.exists():
-            self.console_var.set(f"path not found: {path}")
-            return
+            parent = path.parent
+            if parent.exists() and parent != path:
+                open_path = parent
+                used_fallback = True
+            else:
+                self.console_var.set(f"path not found: {path}")
+                return
         try:
             if os.name == "nt":
-                os.startfile(str(path))  # type: ignore[attr-defined]
+                os.startfile(str(open_path))  # type: ignore[attr-defined]
             else:
-                subprocess.Popen(["xdg-open", str(path)])
-            self.console_var.set(f"opened: {path}")
+                subprocess.Popen(["xdg-open", str(open_path)])
+            if used_fallback:
+                self.console_var.set(f"path not found, opened parent: {open_path}")
+            else:
+                self.console_var.set(f"opened: {open_path}")
         except Exception as ex:
             self.console_var.set(f"open failed: {ex}")
 
@@ -2089,6 +2962,62 @@ class MonitorApp:
             widget.delete("1.0", tk.END)
             widget.insert(tk.END, content + "\n")
             widget.configure(state=tk.DISABLED)
+
+    def _rows_table_column_value(self, row_payload: Any, column: dict[str, Any]) -> Any | None:
+        key = str(column.get("key") or "").strip()
+        if key:
+            if isinstance(row_payload, dict):
+                return row_payload.get(key)
+            return None
+        jsonpath = str(column.get("jsonpath") or "").strip()
+        if jsonpath:
+            return json_path_get(row_payload, jsonpath)
+        return None
+
+    def _refresh_rows_tables(self, runtime: dict[str, Any], payload: dict[str, Any]) -> None:
+        tables = runtime.get("rowsTables")
+        if not isinstance(tables, list):
+            return
+        for table in tables:
+            if not isinstance(table, dict):
+                continue
+            rows_path = str(table.get("rowsPath") or "").strip()
+            columns = table.get("columns")
+            tree = table.get("tree")
+            if not rows_path or not isinstance(columns, list) or not isinstance(tree, ttk.Treeview):
+                continue
+
+            rows_raw = json_path_get(payload, rows_path)
+            rows = rows_raw if isinstance(rows_raw, list) else []
+            max_rows = max(1, int(table.get("maxRows", 200)))
+            visible_rows = rows[:max_rows]
+
+            rendered_rows: list[tuple[str, ...]] = []
+            for row_payload in visible_rows:
+                values: list[str] = []
+                for column in columns:
+                    if not isinstance(column, dict):
+                        values.append("-")
+                        continue
+                    values.append(render_value(self._rows_table_column_value(row_payload, column)))
+                rendered_rows.append(tuple(values))
+
+            signature = tuple(rendered_rows)
+            if signature != table.get("lastSignature"):
+                table["lastSignature"] = signature
+                tree.delete(*tree.get_children())
+                for values in rendered_rows:
+                    tree.insert("", tk.END, values=values)
+
+            empty_var = table.get("emptyVar")
+            if isinstance(empty_var, tk.StringVar):
+                if rendered_rows:
+                    suffix = ""
+                    if len(rows) > len(visible_rows):
+                        suffix = f" (showing {len(visible_rows)} of {len(rows)})"
+                    empty_var.set(f"{len(rows)} row(s){suffix}")
+                else:
+                    empty_var.set(str(table.get("emptyText") or "(no rows)"))
 
     def _start_log_workers(self) -> None:
         for target in self.targets:
@@ -2208,6 +3137,7 @@ class MonitorApp:
         payload = status_payload if isinstance(status_payload, dict) else {}
         bindings = list(runtime.get("bindings") or [])
         profile_selectors = list(runtime.get("profileSelectors") or [])
+        action_selectors = list(runtime.get("actionSelectors") or [])
         error_obj = runtime.get("lastStatusError")
 
         def update() -> None:
@@ -2235,6 +3165,15 @@ class MonitorApp:
                     selected = str(selected_var.get() or "").strip()
                     if (not selected or selected == empty_label) and current_text in options:
                         selected_var.set(current_text)
+            for selector in action_selectors:
+                if not isinstance(selector, dict):
+                    continue
+                refresh_fn = selector.get("refreshFn")
+                if callable(refresh_fn):
+                    try:
+                        refresh_fn(payload)
+                    except Exception:
+                        pass
             banner_var = runtime.get("bannerVar")
             if isinstance(banner_var, tk.StringVar):
                 if isinstance(error_obj, dict):
@@ -2243,7 +3182,9 @@ class MonitorApp:
                     banner_var.set(f"[{ts}] {msg}")
                 else:
                     banner_var.set("")
+            self._refresh_rows_tables(runtime, payload)
             self._refresh_file_viewers(runtime, payload)
+            self._refresh_config_file_selectors(runtime)
             self._refresh_config_editors(runtime, payload)
 
         self.root.after(0, update)
@@ -2276,7 +3217,13 @@ class MonitorApp:
             if isinstance(path_var, tk.StringVar):
                 path_var.set(active_path or "-")
 
-    def _invoke_action(self, target_id: str, action_name: str, action_value: str | None = None) -> None:
+    def _invoke_action(
+        self,
+        target_id: str,
+        action_name: str,
+        action_value: str | None = None,
+        action_args: dict[str, str] | None = None,
+    ) -> None:
         runtime = self.target_runtime.get(target_id)
         if runtime is None:
             return
@@ -2296,18 +3243,30 @@ class MonitorApp:
         if confirm_text and not messagebox.askyesno("Confirm Action", confirm_text):
             return
 
-        tabs_widget = runtime.get("tabsWidget")
-        action_output_tab = runtime.get("actionOutputTab")
-        if isinstance(tabs_widget, ttk.Notebook) and isinstance(action_output_tab, ttk.Frame):
-            try:
-                tabs_widget.select(action_output_tab)
-            except Exception:
-                pass
+        show_output_panel = bool(action.get("showOutputPanel", False))
+        if show_output_panel:
+            tabs_widget = runtime.get("tabsWidget")
+            action_output_tab = runtime.get("actionOutputTab")
+            if isinstance(tabs_widget, ttk.Notebook) and isinstance(action_output_tab, ttk.Frame):
+                try:
+                    tabs_widget.select(action_output_tab)
+                except Exception:
+                    pass
 
-        thread = threading.Thread(target=self._run_action, args=(target_id, action, action_value), daemon=True)
+        thread = threading.Thread(
+            target=self._run_action,
+            args=(target_id, action, action_value, action_args),
+            daemon=True,
+        )
         thread.start()
 
-    def _run_action(self, target_id: str, action: dict[str, Any], action_value: str | None = None) -> None:
+    def _run_action(
+        self,
+        target_id: str,
+        action: dict[str, Any],
+        action_value: str | None = None,
+        action_args: dict[str, str] | None = None,
+    ) -> None:
         action_name = str(action.get("name") or "")
         action_label = str(action.get("label") or action_name)
         mutex_name = str(action.get("mutex") or "").strip()
@@ -2319,15 +3278,38 @@ class MonitorApp:
             lock.acquire()
         try:
             cmd = _normalize_cmd(action.get("cmd"))
-            if action_value is not None:
-                cmd = [part.replace("{value}", str(action_value)) for part in cmd]
+            resolved_action_args: dict[str, str] = {}
+            if isinstance(action_args, dict):
+                for key, value in action_args.items():
+                    key_text = str(key).strip()
+                    if key_text:
+                        resolved_action_args[key_text] = str(value)
+            if action_value is not None and "value" not in resolved_action_args:
+                resolved_action_args["value"] = str(action_value)
+            if resolved_action_args:
+                cmd = _apply_action_placeholders(cmd, resolved_action_args)
             if not cmd:
                 self._append_action_output(target_id, "system", f"{action_label}: empty command")
                 return
+            unresolved_cmd = [part for part in cmd if re.search(r"{[A-Za-z0-9_]+}", part)]
+            if unresolved_cmd:
+                self._append_action_output(
+                    target_id,
+                    "system",
+                    f"{action_label}: unresolved placeholders in command. Provide required arguments.",
+                )
+                return
 
             cwd_text = str(action.get("cwd") or "").strip()
-            if action_value is not None and cwd_text:
-                cwd_text = cwd_text.replace("{value}", str(action_value))
+            if cwd_text and resolved_action_args:
+                cwd_text = _apply_action_placeholders([cwd_text], resolved_action_args)[0]
+            if cwd_text and re.search(r"{[A-Za-z0-9_]+}", cwd_text):
+                self._append_action_output(
+                    target_id,
+                    "system",
+                    f"{action_label}: unresolved placeholders in cwd. Provide required arguments.",
+                )
+                return
             cwd = Path(cwd_text) if cwd_text else None
             timeout_seconds = float(action.get("timeoutSeconds") or 120.0)
             detached = bool(action.get("detached", False))
@@ -2455,6 +3437,17 @@ class MonitorApp:
             widget.delete("1.0", tk.END)
             widget.insert(tk.END, "(cleared)\n")
         self.console_var.set("Action output cleared.")
+
+    def _relaunch_app(self) -> None:
+        argv = [sys.executable, *sys.argv]
+        self.stop_event.set()
+        self.console_var.set("Relaunching monitor...")
+        try:
+            os.execv(sys.executable, argv)
+        except Exception as ex:
+            self.stop_event.clear()
+            self.console_var.set(f"Relaunch failed: {ex}")
+            messagebox.showerror("Relaunch Failed", str(ex))
 
     def _on_close(self) -> None:
         self.stop_event.set()

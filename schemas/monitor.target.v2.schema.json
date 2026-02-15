@@ -16,14 +16,64 @@
           "enum": [
             "kv",
             "table",
+            "rows_table",
             "log",
             "button",
             "profile_select",
             "action_map",
             "action_select",
+            "text_block",
             "file_view",
-            "config_editor"
+            "config_editor",
+            "config_file_select"
           ]
+        }
+      }
+    },
+    "actionArg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "int",
+            "float",
+            "bool"
+          ]
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "optionsJsonpath": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
         }
       }
     },
@@ -212,6 +262,12 @@
           },
           "detached": {
             "type": "boolean"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/actionArg"
+            }
           }
         }
       }

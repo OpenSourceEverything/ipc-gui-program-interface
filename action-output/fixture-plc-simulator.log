@@ -1,0 +1,23 @@
+[system] running Start Run (active profile, detached): python dev run --until-stopped --no-build
+[system] Start Run (active profile, detached): detached process started
+[system] running Stop Run: python dev stop --all
+[stdout] RUN: C:\Users\Gkoers\AppData\Local\Programs\Python\Python313\python.exe \\H3ft06-40318\c\40318-SOFT\scripts\deps_verify.py --scope run
+[stdout] [OK] python>=3.10: 3.13.0
+[stdout] [OK] dotnet: required for build/test commands
+[stdout] [OK] git: required for repo/submodule operations
+[stdout] Stopped fixture session PID 51028.
+[stdout] stop_detail=SUCCESS: The process with PID 18780 (child process of PID 51832) has been terminated.
+[stdout] SUCCESS: The process with PID 51832 (child process of PID 51028) has been terminated.
+[stdout] SUCCESS: The process with PID 51028 (child process of PID 48020) has been terminated.
+[stdout] Stopped fixture session PID 48020.
+[stdout] stop_detail=already-exited
+[stdout] Stopped fixture session PID 39312.
+[stdout] stop_detail=already-exited
+[system] Stop Run: finished rc=0
+[system] running Stop Run: python dev stop --all
+[stdout] RUN: C:\Users\Gkoers\AppData\Local\Programs\Python\Python313\python.exe \\H3ft06-40318\c\40318-SOFT\scripts\deps_verify.py --scope run
+[stdout] [OK] python>=3.10: 3.13.0
+[stdout] [OK] dotnet: required for build/test commands
+[stdout] [OK] git: required for repo/submodule operations
+[stdout] No running fixture test process was found.
+[system] Stop Run: finished rc=0

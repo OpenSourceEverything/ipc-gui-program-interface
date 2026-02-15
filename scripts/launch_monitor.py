@@ -15,6 +15,21 @@ def resolve_target_file(repo: Path, expected_name: str) -> Path:
     return (repo / "config" / "gui" / expected_name).resolve()
 
 
+def resolve_fixture_target_files(repo: Path) -> list[Path]:
+    base = repo / "config" / "gui"
+    names = [
+        "monitor.fixture.target.json",
+        "monitor.plc-simulator.target.json",
+        "monitor.ble-simulator.target.json",
+    ]
+    result: list[Path] = []
+    for name in names:
+        candidate = (base / name).resolve()
+        if candidate.exists():
+            result.append(candidate)
+    return result
+
+
 def build_root_config(include_files: list[Path], refresh: float, timeout: float) -> dict:
     return {
         "refreshSeconds": refresh,
@@ -58,8 +73,14 @@ def main() -> int:
     if args.include_fixture:
         if args.fixture_target.strip():
             fixture_target = Path(args.fixture_target).resolve()
+            include_files.append(fixture_target)
         elif args.fixture_repo.strip():
-            fixture_target = resolve_target_file(Path(args.fixture_repo), "monitor.fixture.target.json")
+            fixture_targets = resolve_fixture_target_files(Path(args.fixture_repo))
+            if not fixture_targets:
+                fixture_target = resolve_target_file(Path(args.fixture_repo), "monitor.fixture.target.json")
+                include_files.append(fixture_target)
+            else:
+                include_files.extend(fixture_targets)
         else:
             print(
                 "fixture target requested but --fixture-repo/--fixture-target was not provided "
@@ -67,7 +88,6 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        include_files.append(fixture_target)
     if args.include_bridge:
         if args.bridge_target.strip():
             bridge_target = Path(args.bridge_target).resolve()
