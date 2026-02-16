@@ -2582,6 +2582,7 @@ class MonitorApp:
             key = str(entry.get("key") or "")
             current_value = entry.get("value")
             current_text = self._config_editor_value_text(current_value)
+            is_settable = bool(entry.get("settable", False))
 
             ttk.Label(rows_frame, text=key).grid(row=row_index, column=0, sticky="w", padx=6, pady=2)
             ttk.Label(rows_frame, text=current_text).grid(row=row_index, column=1, sticky="w", padx=6, pady=2)
@@ -2629,9 +2630,12 @@ class MonitorApp:
                 input_control = ttk.Entry(rows_frame, textvariable=input_var, width=32)
                 input_control.grid(row=row_index, column=2, sticky="we", padx=6, pady=2)
 
-            validation_var = tk.StringVar(value="")
+            if not is_settable:
+                input_control.configure(state=tk.DISABLED)
+
+            validation_var = tk.StringVar(value="" if is_settable else "read-only")
             ttk.Label(rows_frame, textvariable=validation_var).grid(row=row_index, column=3, sticky="w", padx=6, pady=2)
-            ttk.Button(
+            set_button = ttk.Button(
                 rows_frame,
                 text="Set",
                 command=lambda item=entry, var=input_var, state_var=validation_var: self._set_config_editor_entry(
@@ -2641,7 +2645,10 @@ class MonitorApp:
                     var,
                     state_var,
                 ),
-            ).grid(row=row_index, column=4, sticky="w", padx=6, pady=2)
+            )
+            if not is_settable:
+                set_button.configure(state=tk.DISABLED)
+            set_button.grid(row=row_index, column=4, sticky="w", padx=6, pady=2)
 
         editor["rowState"] = next_row_state
         rows_frame.update_idletasks()

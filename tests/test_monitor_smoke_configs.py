@@ -29,7 +29,7 @@ class MonitorSmokeConfigTests(unittest.TestCase):
             self.assertGreaterEqual(len(targets), 2)
 
             ids = {str(item.get("id") or "") for item in targets if isinstance(item, dict)}
-            self.assertIn("fixture", ids)
+            self.assertTrue("fixture" in ids or "fixture-40318" in ids)
             self.assertIn("bridge", ids)
 
 

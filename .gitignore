@@ -3,3 +3,4 @@ __pycache__/
 *.pyo
 .pytest_cache/
 monitor_config.generated.json
+action-output/

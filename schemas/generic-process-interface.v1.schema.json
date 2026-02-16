@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "ipc-gui-program-interface/schemas/generic-process-interface.v1.schema.json",
+  "title": "Generic Process Interface v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "statusPayload": {
+      "$ref": "#/$defs/statusPayload"
+    },
+    "actionDescriptor": {
+      "$ref": "#/$defs/actionDescriptor"
+    },
+    "configShowPayload": {
+      "$ref": "#/$defs/configShowPayload"
+    }
+  },
+  "$defs": {
+    "statusPayload": {
+      "type": "object",
+      "required": [
+        "interfaceName",
+        "interfaceVersion",
+        "appId",
+        "appTitle",
+        "bootId",
+        "running",
+        "pid",
+        "hostRunning",
+        "hostPid"
+      ],
+      "properties": {
+        "interfaceName": {
+          "type": "string",
+          "const": "generic-process-interface"
+        },
+        "interfaceVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "appId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appTitle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bootId": {
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "hostRunning": {
+          "type": "boolean"
+        },
+        "hostPid": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "actionDescriptor": {
+      "type": "object",
+      "required": [
+        "name",
+        "label",
+        "cmd"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cmd": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "timeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "showOutputPanel": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "configShowPayload": {
+      "type": "object",
+      "required": [
+        "paths",
+        "entries"
+      ],
+      "properties": {
+        "paths": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {},
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "settable": {
+                "type": "boolean"
+              },
+              "allowedValues": {
+                "type": "array",
+                "items": {}
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
