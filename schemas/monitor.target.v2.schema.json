@@ -22,6 +22,7 @@
             "profile_select",
             "action_map",
             "action_select",
+            "action_output",
             "text_block",
             "file_view",
             "config_editor",
@@ -171,6 +172,58 @@
           "minimum": 0.1
         }
       }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ipc"
+          ]
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeoutSeconds": {
+          "type": "number",
+          "minimum": 0.1
+        },
+        "jobPollMs": {
+          "type": "integer",
+          "minimum": 50
+        },
+        "jobTimeoutSeconds": {
+          "type": "number",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "ipc"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "endpoint",
+              "appId"
+            ]
+          }
+        }
+      ]
     },
     "logs": {
       "type": "array",

@@ -91,6 +91,79 @@ class MonitorConfigValidationTests(unittest.TestCase):
             targets = loaded.get("targets", [])
             self.assertEqual(len(targets), 1)
 
+    def test_accepts_action_output_widget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            _write_json(
+                target,
+                (
+                    '{"configVersion":2,"id":"bridge","title":"Bridge",'
+                    '"status":{"cwd":".","cmd":["python","-V"]},'
+                    '"ui":{"tabs":[{"id":"actions","title":"Actions","widgets":['
+                    '{"type":"action_output","title":"Output"}'
+                    ']}]}}'
+                ),
+            )
+            root_config = root / "monitor_config.json"
+            _write_json(
+                root_config,
+                '{"refreshSeconds":1.0,"commandTimeoutSeconds":10.0,"includeFiles":["target.json"]}',
+            )
+
+            loaded = monitor.load_monitor_config(root_config)
+            targets = loaded.get("targets", [])
+            self.assertEqual(len(targets), 1)
+
+    def test_accepts_ipc_control_without_target_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            _write_json(
+                target,
+                (
+                    '{"configVersion":2,"id":"bridge","title":"Bridge",'
+                    '"status":{"cwd":".","cmd":["python","-V"]},'
+                    '"control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},'
+                    '"ui":{"tabs":[{"id":"actions","title":"Actions","widgets":['
+                    '{"type":"action_select","title":"Run Action"},'
+                    '{"type":"action_output","title":"Output"}'
+                    ']}]}}'
+                ),
+            )
+            root_config = root / "monitor_config.json"
+            _write_json(
+                root_config,
+                '{"refreshSeconds":1.0,"commandTimeoutSeconds":10.0,"includeFiles":["target.json"]}',
+            )
+            loaded = monitor.load_monitor_config(root_config)
+            targets = loaded.get("targets", [])
+            self.assertEqual(len(targets), 1)
+            control = targets[0].get("control")
+            self.assertIsInstance(control, dict)
+            self.assertEqual(str(control.get("mode") or ""), "ipc")
+
+    def test_rejects_ipc_control_missing_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            _write_json(
+                target,
+                (
+                    '{"configVersion":2,"id":"bridge","title":"Bridge",'
+                    '"status":{"cwd":".","cmd":["python","-V"]},'
+                    '"control":{"mode":"ipc","appId":"bridge"},'
+                    '"ui":{"tabs":[{"id":"actions","title":"Actions","widgets":[{"type":"action_output","title":"Output"}]}]}}'
+                ),
+            )
+            root_config = root / "monitor_config.json"
+            _write_json(
+                root_config,
+                '{"refreshSeconds":1.0,"commandTimeoutSeconds":10.0,"includeFiles":["target.json"]}',
+            )
+            with self.assertRaises(ValueError):
+                monitor.load_monitor_config(root_config)
+
     def test_missing_jsonpath_returns_none(self):
         payload = {"a": {"b": 1}}
         self.assertIsNone(monitor.json_path_get(payload, "$.a.c"))

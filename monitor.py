@@ -8,6 +8,7 @@ import glob
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -25,6 +26,9 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 10.0
 DEFAULT_ACTION_OUTPUT_MAX_LINES = 1200
 DEFAULT_ACTION_OUTPUT_MAX_BYTES = 1_000_000
 MIN_REFRESH_TICK_SECONDS = 0.2
+DEFAULT_CONTROL_TIMEOUT_SECONDS = 8.0
+DEFAULT_CONTROL_JOB_POLL_MS = 200
+DEFAULT_CONTROL_JOB_TIMEOUT_SECONDS = 120.0
 
 
 def _no_window_creationflags() -> int:
@@ -66,6 +70,41 @@ def _require_string_list(value: Any, context: str) -> list[str]:
     if not result:
         raise ValueError(f"{context} must contain at least one item.")
     return result
+
+
+def _normalize_control_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+
+    mode = str(value.get("mode") or "").strip().lower()
+    if mode != "ipc":
+        return {}
+
+    endpoint = str(value.get("endpoint") or "").strip()
+    app_id = str(value.get("appId") or "").strip()
+    if not endpoint or not app_id:
+        return {}
+
+    timeout_seconds = float(value.get("timeoutSeconds", DEFAULT_CONTROL_TIMEOUT_SECONDS))
+    job_poll_ms = int(value.get("jobPollMs", DEFAULT_CONTROL_JOB_POLL_MS))
+    job_timeout_seconds = float(value.get("jobTimeoutSeconds", DEFAULT_CONTROL_JOB_TIMEOUT_SECONDS))
+    return {
+        "mode": "ipc",
+        "endpoint": endpoint,
+        "appId": app_id,
+        "timeoutSeconds": max(0.1, timeout_seconds),
+        "jobPollMs": max(50, job_poll_ms),
+        "jobTimeoutSeconds": max(1.0, job_timeout_seconds),
+    }
+
+
+def _target_control(target: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_control_payload(target.get("control"))
+
+
+def _is_ipc_control(target: dict[str, Any]) -> bool:
+    control = _target_control(target)
+    return str(control.get("mode") or "") == "ipc"
 
 
 def _validate_root_config_payload(base: dict[str, Any], source_path: Path) -> None:
@@ -163,6 +202,10 @@ def _validate_v2_widget(widget: dict[str, Any], context: str) -> None:
             {"type", "title", "includePrefix", "includeRegex", "emptyLabel", "runLabel", "showCommand"},
             context,
         )
+        return
+
+    if widget_type == "action_output":
+        _assert_allowed_keys(widget, {"type", "title"}, context)
         return
 
     if widget_type == "text_block":
@@ -320,12 +363,49 @@ def _iter_v2_widgets(tab: dict[str, Any], context: str) -> list[tuple[str, dict[
     return results
 
 
+def _validate_v2_control_payload(value: Any, source_path: Path, context: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} in {source_path} must be an object.")
+
+    _assert_allowed_keys(
+        value,
+        {"mode", "endpoint", "appId", "timeoutSeconds", "jobPollMs", "jobTimeoutSeconds"},
+        f"{context} in {source_path}",
+    )
+    mode = str(value.get("mode") or "").strip().lower()
+    if mode and mode != "ipc":
+        raise ValueError(f"{context}.mode in {source_path} must be 'ipc' when provided.")
+    if mode == "ipc":
+        endpoint = str(value.get("endpoint") or "").strip()
+        app_id = str(value.get("appId") or "").strip()
+        if not endpoint:
+            raise ValueError(f"{context}.endpoint in {source_path} must be a non-empty string when mode=ipc.")
+        if not app_id:
+            raise ValueError(f"{context}.appId in {source_path} must be a non-empty string when mode=ipc.")
+    return _normalize_control_payload(value)
+
+
 def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, context: str) -> None:
     _assert_allowed_keys(
         target,
-        {"configVersion", "id", "title", "refreshSeconds", "status", "logs", "actions", "ui", "actionOutput"},
+        {
+            "configVersion",
+            "id",
+            "title",
+            "refreshSeconds",
+            "status",
+            "logs",
+            "actions",
+            "ui",
+            "actionOutput",
+            "control",
+        },
         f"{context} in {source_path}",
     )
+    control = _validate_v2_control_payload(target.get("control"), source_path, f"{context}.control")
+    ipc_mode = str(control.get("mode") or "") == "ipc"
 
     status = target.get("status")
     if not isinstance(status, dict):
@@ -420,35 +500,35 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
                     )
             elif widget_type == "button":
                 action_name = str(widget.get("action") or "").strip()
-                if action_name and action_name not in action_names:
+                if not ipc_mode and action_name and action_name not in action_names:
                     raise ValueError(
                         f"{widget_context}.action in {source_path} references unknown action '{action_name}'."
                     )
             elif widget_type == "profile_select":
                 action_name = str(widget.get("action") or "").strip()
-                if action_name and action_name not in action_names:
+                if not ipc_mode and action_name and action_name not in action_names:
                     raise ValueError(
                         f"{widget_context}.action in {source_path} references unknown action '{action_name}'."
                     )
             elif widget_type == "config_editor":
                 show_action = str(widget.get("showAction") or "").strip()
                 set_action = str(widget.get("setAction") or "").strip()
-                if show_action and show_action not in action_names:
+                if not ipc_mode and show_action and show_action not in action_names:
                     raise ValueError(
                         f"{widget_context}.showAction in {source_path} references unknown action '{show_action}'."
                     )
-                if set_action and set_action not in action_names:
+                if not ipc_mode and set_action and set_action not in action_names:
                     raise ValueError(
                         f"{widget_context}.setAction in {source_path} references unknown action '{set_action}'."
                     )
             elif widget_type == "config_file_select":
                 show_action = str(widget.get("showAction") or "").strip()
                 set_action = str(widget.get("setAction") or "").strip()
-                if show_action and show_action not in action_names:
+                if not ipc_mode and show_action and show_action not in action_names:
                     raise ValueError(
                         f"{widget_context}.showAction in {source_path} references unknown action '{show_action}'."
                     )
-                if set_action and set_action not in action_names:
+                if not ipc_mode and set_action and set_action not in action_names:
                     raise ValueError(
                         f"{widget_context}.setAction in {source_path} references unknown action '{set_action}'."
                     )
@@ -557,6 +637,48 @@ def run_cmd(cmd: list[str], cwd: Path | None, timeout_seconds: float) -> tuple[i
         creationflags=_no_window_creationflags(),
     )
     return int(completed.returncode), completed.stdout or "", completed.stderr or ""
+
+
+def _parse_endpoint(endpoint: str) -> tuple[str, int]:
+    text = str(endpoint or "").strip()
+    if not text:
+        raise ValueError("endpoint is empty")
+    if ":" not in text:
+        raise ValueError("endpoint must be host:port")
+    host, raw_port = text.rsplit(":", 1)
+    host = host.strip() or "127.0.0.1"
+    port = int(raw_port.strip())
+    if port <= 0 or port > 65535:
+        raise ValueError("endpoint port is out of range")
+    return host, port
+
+
+def _request_ipc_v0(
+    endpoint: str,
+    request: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> tuple[int, dict[str, Any], str]:
+    try:
+        host, port = _parse_endpoint(endpoint)
+        payload = request if isinstance(request, dict) else {}
+        with socket.create_connection((host, port), timeout=max(0.1, float(timeout_seconds))) as sock:
+            sock.settimeout(max(0.1, float(timeout_seconds)))
+            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            response_line = sock.makefile("r", encoding="utf-8", newline="\n").readline().strip()
+        if not response_line:
+            return 2, {}, "ipc response is empty"
+        response_obj = json.loads(response_line)
+        if not isinstance(response_obj, dict):
+            return 2, {}, "ipc response is not an object"
+        if bool(response_obj.get("ok", False)):
+            return 0, response_obj, ""
+        error_obj = response_obj.get("error")
+        if isinstance(error_obj, dict):
+            return 2, response_obj, str(error_obj.get("message") or "ipc request failed")
+        return 2, response_obj, "ipc request failed"
+    except Exception as ex:
+        return 2, {}, f"ipc request failed: {ex}"
 
 
 def _iter_jsonpath_tokens(path: str) -> list[str | int] | None:
@@ -1014,6 +1136,7 @@ def _normalize_v2_target(
 
     action_output = target.get("actionOutput")
     action_output_obj = action_output if isinstance(action_output, dict) else {}
+    control = _normalize_control_payload(target.get("control"))
 
     return {
         "configVersion": 2,
@@ -1028,6 +1151,7 @@ def _normalize_v2_target(
         "logs": logs,
         "actions": actions,
         "ui": {"tabs": tabs},
+        "control": control,
         "actionOutput": {
             "maxLines": int(action_output_obj.get("maxLines", default_action_output_max_lines)),
             "maxBytes": int(action_output_obj.get("maxBytes", default_action_output_max_bytes)),
@@ -1366,10 +1490,12 @@ class MonitorApp:
 
         runtime = {
             "target": target,
+            "control": _target_control(target),
             "bannerVar": banner_var,
             "bindings": [],
             "profileSelectors": [],
             "actionSelectors": [],
+            "actionMaps": [],
             "rowsTables": [],
             "fileViewers": [],
             "configEditors": [],
@@ -1382,44 +1508,20 @@ class MonitorApp:
             "nextRefreshAt": 0.0,
             "tabsWidget": tabs,
             "actionOutputTab": None,
+            "actionOutputNotebook": None,
+            "actionCatalogItems": [],
+            "actionCatalogLoading": False,
+            "actionCatalogLoaded": False,
+            "actionCatalogError": "",
+            "actionCatalogSignature": None,
         }
         self.target_runtime[tid] = runtime
+        self._ensure_action_output_runtime(runtime)
 
         ui = target.get("ui") if isinstance(target.get("ui"), dict) else {}
         ui_tabs = ui.get("tabs") if isinstance(ui.get("tabs"), list) else []
         self._build_tabs(tabs, runtime, ui_tabs)
-
-        action_output_tab = ttk.Frame(tabs)
-        tabs.add(action_output_tab, text="Action Output")
-        runtime["actionOutputTab"] = action_output_tab
-        action_output_root = self.config_path.parent / "action-output"
-        action_output_root.mkdir(parents=True, exist_ok=True)
-        action_output_path = (action_output_root / f"{tid}.log").resolve()
-        runtime["actionOutputPath"] = action_output_path
-
-        toolbar = ttk.Frame(action_output_tab)
-        toolbar.pack(fill=tk.X, padx=6, pady=(6, 2))
-        action_output_path_var = tk.StringVar(value=str(action_output_path))
-        ttk.Label(toolbar, text="Source:").pack(side=tk.LEFT)
-        ttk.Label(toolbar, textvariable=action_output_path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
-        ttk.Button(toolbar, text="Open", command=lambda var=action_output_path_var: self._open_file_path(var.get())).pack(
-            side=tk.RIGHT, padx=(6, 0)
-        )
-        ttk.Button(toolbar, text="Copy", command=lambda var=action_output_path_var: self._copy_to_clipboard(var.get())).pack(
-            side=tk.RIGHT
-        )
-        ttk.Button(toolbar, text="Clear", command=lambda target_id=tid: self._clear_action_output(target_id)).pack(
-            side=tk.RIGHT, padx=(0, 6)
-        )
-
-        action_text = tk.Text(action_output_tab, wrap=tk.NONE, height=10)
-        action_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
-        runtime["actionOutputWidget"] = action_text
-        action_output_cfg = target.get("actionOutput") if isinstance(target.get("actionOutput"), dict) else {}
-        runtime["actionOutputBuffer"] = ActionOutputBuffer(
-            max_lines=int(action_output_cfg.get("maxLines", DEFAULT_ACTION_OUTPUT_MAX_LINES)),
-            max_bytes=int(action_output_cfg.get("maxBytes", DEFAULT_ACTION_OUTPUT_MAX_BYTES)),
-        )
+        self._refresh_action_catalog_async(tid, force=True)
 
     def _build_tabs(self, tabs_widget: ttk.Notebook, runtime: dict[str, Any], tabs: list[dict[str, Any]]) -> None:
         for tab in tabs:
@@ -1468,7 +1570,7 @@ class MonitorApp:
             self._build_one_widget(parent, runtime, widget_items[0])
             return
 
-        splitter_widget_types = {"log", "action_map", "file_view", "rows_table"}
+        splitter_widget_types = {"log", "action_map", "action_output", "file_view", "rows_table"}
         uses_splitter = any(str(item.get("type") or "").strip().lower() in splitter_widget_types for item in widget_items)
         if uses_splitter:
             pane = ttk.Panedwindow(parent, orient=tk.VERTICAL)
@@ -1525,6 +1627,9 @@ class MonitorApp:
             return
         if widget_type == "action_select":
             self._build_widget_action_select(parent, runtime, widget)
+            return
+        if widget_type == "action_output":
+            self._build_widget_action_output(parent, runtime, widget)
             return
         if widget_type == "text_block":
             self._build_widget_text_block(parent, runtime, widget)
@@ -1725,6 +1830,142 @@ class MonitorApp:
             }
         )
 
+    def _ipc_control_for_runtime(self, runtime: dict[str, Any]) -> dict[str, Any] | None:
+        control = runtime.get("control")
+        if not isinstance(control, dict):
+            return None
+        if str(control.get("mode") or "").strip().lower() != "ipc":
+            return None
+        endpoint = str(control.get("endpoint") or "").strip()
+        app_id = str(control.get("appId") or "").strip()
+        if not endpoint or not app_id:
+            return None
+        return control
+
+    def _action_items_for_runtime(self, runtime: dict[str, Any]) -> list[dict[str, Any]]:
+        control = self._ipc_control_for_runtime(runtime)
+        if control is not None:
+            catalog_items = runtime.get("actionCatalogItems")
+            if isinstance(catalog_items, list):
+                return [item for item in catalog_items if isinstance(item, dict)]
+            return []
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        actions = target.get("actions") if isinstance(target.get("actions"), list) else []
+        return [item for item in actions if isinstance(item, dict)]
+
+    def _refresh_action_catalog_async(self, target_id: str, *, force: bool = False) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            return
+        if bool(runtime.get("actionCatalogLoading", False)):
+            return
+        if bool(runtime.get("actionCatalogLoaded", False)) and not force:
+            return
+        runtime["actionCatalogLoading"] = True
+        thread = threading.Thread(target=self._load_action_catalog, args=(target_id,), daemon=True)
+        thread.start()
+
+    def _load_action_catalog(self, target_id: str) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            self.root.after(0, lambda: self._finalize_action_catalog_load(target_id, [], ""))
+            return
+
+        endpoint = str(control.get("endpoint") or "")
+        app_id = str(control.get("appId") or "")
+        timeout_seconds = float(control.get("timeoutSeconds") or DEFAULT_CONTROL_TIMEOUT_SECONDS)
+        rc, response_obj, error_text = _request_ipc_v0(
+            endpoint,
+            {"method": "action.list", "params": {"appId": app_id}},
+            timeout_seconds=timeout_seconds,
+        )
+        if rc != 0:
+            self.root.after(
+                0,
+                lambda: self._finalize_action_catalog_load(
+                    target_id,
+                    [],
+                    error_text or f"failed to fetch action catalog rc={rc}",
+                ),
+            )
+            return
+
+        response = response_obj.get("response")
+        actions_raw = response.get("actions") if isinstance(response, dict) else None
+        if not isinstance(actions_raw, list):
+            self.root.after(
+                0,
+                lambda: self._finalize_action_catalog_load(target_id, [], "invalid action catalog payload"),
+            )
+            return
+
+        actions: list[dict[str, Any]] = []
+        for item in actions_raw:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            action_item = {
+                "name": name,
+                "label": str(item.get("label") or name),
+                "args": item.get("args") if isinstance(item.get("args"), list) else [],
+            }
+            cmd_value = item.get("cmd")
+            if isinstance(cmd_value, list):
+                action_item["cmd"] = [str(part) for part in cmd_value]
+            actions.append(action_item)
+
+        self.root.after(0, lambda: self._finalize_action_catalog_load(target_id, actions, ""))
+
+    def _finalize_action_catalog_load(self, target_id: str, actions: list[dict[str, Any]], error_text: str) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return
+        runtime["actionCatalogLoading"] = False
+        runtime["actionCatalogLoaded"] = not bool(error_text)
+        runtime["actionCatalogError"] = str(error_text or "")
+        if not error_text:
+            runtime["actionCatalogItems"] = actions
+        signature_items: list[tuple[str, str]] = []
+        for item in runtime.get("actionCatalogItems", []):
+            if not isinstance(item, dict):
+                continue
+            signature_items.append((str(item.get("name") or ""), str(item.get("label") or "")))
+        runtime["actionCatalogSignature"] = tuple(signature_items)
+        self._refresh_action_widgets(target_id)
+
+    def _refresh_action_widgets(self, target_id: str) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return
+        payload = runtime.get("lastGoodStatus")
+        payload_obj = payload if isinstance(payload, dict) else {}
+        for selector in list(runtime.get("actionSelectors") or []):
+            if not isinstance(selector, dict):
+                continue
+            refresh_fn = selector.get("refreshFn")
+            if callable(refresh_fn):
+                try:
+                    refresh_fn(payload_obj)
+                except Exception:
+                    pass
+        for action_map in list(runtime.get("actionMaps") or []):
+            if not isinstance(action_map, dict):
+                continue
+            refresh_fn = action_map.get("refreshFn")
+            if callable(refresh_fn):
+                try:
+                    refresh_fn()
+                except Exception:
+                    pass
+
     def _build_widget_action_map(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Commands"))
         frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
@@ -1732,33 +1973,50 @@ class MonitorApp:
         show_action_name = bool(widget.get("showActionName", True))
         include_prefix = str(widget.get("includePrefix") or "").strip()
         include_regex = str(widget.get("includeRegex") or "").strip()
-        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
-        actions = target.get("actions") if isinstance(target.get("actions"), list) else []
         matcher = re.compile(include_regex) if include_regex else None
 
         text = tk.Text(frame, wrap=tk.NONE, height=12)
         text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        lines: list[str] = []
-        for item in actions:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name") or "").strip()
-            if include_prefix and not name.startswith(include_prefix):
-                continue
-            if matcher and matcher.search(name) is None:
-                continue
-            label = str(item.get("label") or name).strip()
-            cmd = _normalize_cmd(item.get("cmd"))
-            head = label
-            if show_action_name and name:
-                head = f"{label} ({name})"
-            lines.append(head)
-            if include_commands and cmd:
-                lines.append("  " + " ".join(cmd))
-            lines.append("")
-        render = "\n".join(lines).strip() or "(no actions configured)"
-        text.insert(tk.END, render + "\n")
-        text.configure(state=tk.DISABLED)
+        action_map_runtime: dict[str, Any] = {
+            "textWidget": text,
+            "includeCommands": include_commands,
+            "showActionName": show_action_name,
+            "includePrefix": include_prefix,
+            "matcher": matcher,
+        }
+
+        def refresh_action_map() -> None:
+            actions = self._action_items_for_runtime(runtime)
+            lines: list[str] = []
+            for item in actions:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if include_prefix and not name.startswith(include_prefix):
+                    continue
+                if matcher and matcher.search(name) is None:
+                    continue
+                label = str(item.get("label") or name).strip()
+                cmd = _normalize_cmd(item.get("cmd"))
+                head = label
+                if show_action_name and name:
+                    head = f"{label} ({name})"
+                lines.append(head)
+                if include_commands:
+                    if cmd:
+                        lines.append("  " + " ".join(cmd))
+                    elif self._ipc_control_for_runtime(runtime) is not None:
+                        lines.append("  [IPC action]")
+                lines.append("")
+            render = "\n".join(lines).strip() or "(no actions configured)"
+            text.configure(state=tk.NORMAL)
+            text.delete("1.0", tk.END)
+            text.insert(tk.END, render + "\n")
+            text.configure(state=tk.DISABLED)
+
+        action_map_runtime["refreshFn"] = refresh_action_map
+        runtime["actionMaps"].append(action_map_runtime)
+        refresh_action_map()
 
     def _build_widget_action_select(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Select Action"))
@@ -1771,37 +2029,15 @@ class MonitorApp:
 
         target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
         target_id = str(target.get("id") or "")
-        actions = target.get("actions") if isinstance(target.get("actions"), list) else []
         matcher = re.compile(include_regex) if include_regex else None
-        eligible: list[dict[str, Any]] = []
-        for item in actions:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name") or "").strip()
-            if include_prefix and not name.startswith(include_prefix):
-                continue
-            if matcher and matcher.search(name) is None:
-                continue
-            eligible.append(item)
-
-        label_to_name: dict[str, str] = {}
-        options: list[str] = []
-        for item in eligible:
-            name = str(item.get("name") or "").strip()
-            label = str(item.get("label") or name).strip()
-            display = f"{label} ({name})" if name else label
-            options.append(display)
-            label_to_name[display] = name
 
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, padx=8, pady=6)
         selected_var = tk.StringVar(value=empty_label)
         combo = ttk.Combobox(row, textvariable=selected_var, state="readonly", width=50)
-        combo["values"] = options if options else [empty_label]
+        combo["values"] = [empty_label]
         combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        combo.set(empty_label if not options else options[0])
-        if options:
-            selected_var.set(options[0])
+        combo.set(empty_label)
 
         arg_row = ttk.Frame(frame)
         arg_row.pack(fill=tk.X, padx=8, pady=(0, 6))
@@ -1818,8 +2054,8 @@ class MonitorApp:
 
         selector: dict[str, Any] = {
             "selectedVar": selected_var,
-            "labelToName": label_to_name,
-            "eligible": eligible,
+            "labelToName": {},
+            "eligible": [],
             "argRow": arg_row,
             "argLabelVar": arg_label_var,
             "argStatusVar": arg_status_var,
@@ -1830,14 +2066,22 @@ class MonitorApp:
             "currentArgSpec": None,
             "currentArgOptions": [],
             "lastPayload": {},
+            "emptyLabel": empty_label,
+            "combo": combo,
+            "includePrefix": include_prefix,
+            "matcher": matcher,
         }
 
         def run_selected() -> None:
             selected = str(selected_var.get() or "").strip()
-            action_name = label_to_name.get(selected, "")
+            label_to_name_obj = selector.get("labelToName")
+            label_to_name = label_to_name_obj if isinstance(label_to_name_obj, dict) else {}
+            action_name = str(label_to_name.get(selected) or "")
             if not action_name:
                 self.console_var.set("No action selected.")
                 return
+            eligible_obj = selector.get("eligible")
+            eligible = eligible_obj if isinstance(eligible_obj, list) else []
             action = next((item for item in eligible if str(item.get("name") or "") == action_name), None)
             if not isinstance(action, dict):
                 self.console_var.set("Selected action is unavailable.")
@@ -1871,6 +2115,35 @@ class MonitorApp:
         def update_selector(payload: dict[str, Any] | None = None) -> None:
             payload_obj = payload if isinstance(payload, dict) else {}
             selector["lastPayload"] = payload_obj
+            all_actions = self._action_items_for_runtime(runtime)
+            eligible: list[dict[str, Any]] = []
+            label_to_name: dict[str, str] = {}
+            options: list[str] = []
+            for item in all_actions:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if include_prefix and not name.startswith(include_prefix):
+                    continue
+                if matcher and matcher.search(name) is None:
+                    continue
+                label = str(item.get("label") or name).strip()
+                display = f"{label} ({name})" if name else label
+                label_to_name[display] = name
+                options.append(display)
+                eligible.append(item)
+            selector["labelToName"] = label_to_name
+            selector["eligible"] = eligible
+
+            combo_values = options if options else [empty_label]
+            combo["values"] = combo_values
+            if options:
+                selected_now = str(selected_var.get() or "").strip()
+                if selected_now not in options:
+                    selected_var.set(options[0])
+            else:
+                selected_var.set(empty_label)
+
             selected = str(selected_var.get() or "").strip()
             action_name = label_to_name.get(selected, "")
             action = next((item for item in eligible if str(item.get("name") or "") == action_name), None)
@@ -1887,7 +2160,12 @@ class MonitorApp:
 
             cmd = _normalize_cmd(action.get("cmd"))
             if show_command:
-                command_var.set(" ".join(cmd) if cmd else "-")
+                if cmd:
+                    command_var.set(" ".join(cmd))
+                elif self._ipc_control_for_runtime(runtime) is not None:
+                    command_var.set("[IPC action]")
+                else:
+                    command_var.set("-")
 
             arg_spec = _action_primary_arg(action)
             selector["currentArgSpec"] = arg_spec
@@ -1926,6 +2204,70 @@ class MonitorApp:
         update_selector({})
         selector["refreshFn"] = update_selector
         runtime["actionSelectors"].append(selector)
+
+    def _ensure_action_output_runtime(self, runtime: dict[str, Any]) -> None:
+        if isinstance(runtime.get("actionOutputPath"), Path) and isinstance(runtime.get("actionOutputBuffer"), ActionOutputBuffer):
+            return
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "target")
+        action_output_root = self.config_path.parent / "action-output"
+        action_output_root.mkdir(parents=True, exist_ok=True)
+        action_output_path = (action_output_root / f"{target_id}.log").resolve()
+        runtime["actionOutputPath"] = action_output_path
+        action_output_cfg = target.get("actionOutput") if isinstance(target.get("actionOutput"), dict) else {}
+        runtime["actionOutputBuffer"] = ActionOutputBuffer(
+            max_lines=int(action_output_cfg.get("maxLines", DEFAULT_ACTION_OUTPUT_MAX_LINES)),
+            max_bytes=int(action_output_cfg.get("maxBytes", DEFAULT_ACTION_OUTPUT_MAX_BYTES)),
+        )
+
+    def _resolve_tab_for_widget_parent(self, parent: ttk.Frame) -> tuple[ttk.Notebook | None, ttk.Frame | None]:
+        current: Any = parent
+        while isinstance(current, tk.Widget):
+            parent_name = str(current.winfo_parent() or "").strip()
+            if not parent_name:
+                break
+            try:
+                parent_widget = current.nametowidget(parent_name)
+            except Exception:
+                break
+            if isinstance(parent_widget, ttk.Notebook) and isinstance(current, ttk.Frame):
+                return parent_widget, current
+            current = parent_widget
+        return None, None
+
+    def _build_widget_action_output(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
+        self._ensure_action_output_runtime(runtime)
+        frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Action Output"))
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=6, anchor="n")
+
+        output_path = runtime.get("actionOutputPath")
+        output_path_text = str(output_path) if isinstance(output_path, Path) else ""
+
+        toolbar = ttk.Frame(frame)
+        toolbar.pack(fill=tk.X, padx=6, pady=(6, 2))
+        output_path_var = tk.StringVar(value=output_path_text)
+        ttk.Label(toolbar, text="Source:").pack(side=tk.LEFT)
+        ttk.Label(toolbar, textvariable=output_path_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        ttk.Button(toolbar, text="Open", command=lambda var=output_path_var: self._open_file_path(var.get())).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        ttk.Button(toolbar, text="Copy", command=lambda var=output_path_var: self._copy_to_clipboard(var.get())).pack(
+            side=tk.RIGHT
+        )
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
+        target_id = str(target.get("id") or "")
+        ttk.Button(toolbar, text="Clear", command=lambda tid=target_id: self._clear_action_output(tid)).pack(
+            side=tk.RIGHT, padx=(0, 6)
+        )
+
+        action_text = tk.Text(frame, wrap=tk.NONE, height=10)
+        action_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 6))
+        runtime["actionOutputWidget"] = action_text
+
+        notebook, tab_frame = self._resolve_tab_for_widget_parent(parent)
+        if isinstance(notebook, ttk.Notebook) and isinstance(tab_frame, ttk.Frame):
+            runtime["actionOutputNotebook"] = notebook
+            runtime["actionOutputTab"] = tab_frame
 
     def _build_widget_text_block(self, parent: ttk.Frame, runtime: dict[str, Any], widget: dict[str, Any]) -> None:
         frame = ttk.LabelFrame(parent, text=str(widget.get("title") or "Notes"))
@@ -2160,26 +2502,11 @@ class MonitorApp:
 
     def _load_config_file_selector_data(self, target_id: str, selector: dict[str, Any]) -> None:
         show_action = str(selector.get("showAction") or "").strip()
-        rc, stdout, stderr, command_error = self._run_named_action_command(target_id, show_action)
-        if command_error:
-            self.root.after(
-                0,
-                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, command_error),
-            )
-            return
-        if rc != 0:
-            message = (stderr or stdout or f"show action failed rc={rc}").strip()
-            self.root.after(
-                0,
-                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, message),
-            )
-            return
-
-        payload, parse_error = try_extract_json_object(stdout)
+        payload, load_error = self._load_config_payload(target_id, show_action)
         if payload is None:
             self.root.after(
                 0,
-                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, parse_error),
+                lambda: self._finalize_config_file_selector_load(selector, "", "", [], {}, load_error),
             )
             return
 
@@ -2316,18 +2643,9 @@ class MonitorApp:
         self._set_stringvar_if_changed(status_var, "saving...")
 
         def run_set() -> None:
-            rc, stdout, stderr, command_error = self._run_named_action_command(
-                target_id,
-                set_action,
-                replacements={"key": key, "value": set_value},
-            )
-            if command_error:
-                self.root.after(0, lambda: self._set_stringvar_if_changed(status_var, command_error))
-                return
+            rc, error_text = self._set_config_value(target_id, set_action, key, set_value)
             if rc != 0:
-                message = (stderr or stdout or f"set failed rc={rc}").strip()
-                first_line = message.splitlines()[0] if message else f"set failed rc={rc}"
-                self.root.after(0, lambda: self._set_stringvar_if_changed(status_var, first_line))
+                self.root.after(0, lambda: self._set_stringvar_if_changed(status_var, error_text))
                 return
             self._mark_target_config_widgets_for_refresh(target_id)
             self.root.after(0, lambda: self._refresh_target_config_widgets(target_id, show_loading=False))
@@ -2392,6 +2710,89 @@ class MonitorApp:
         except Exception as ex:
             return 2, "", "", str(ex)
 
+    def _run_control_config_get(self, target_id: str) -> tuple[int, dict[str, Any], str]:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return 2, {}, f"unknown target: {target_id}"
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            return 2, {}, "ipc control is not configured"
+        endpoint = str(control.get("endpoint") or "")
+        app_id = str(control.get("appId") or "")
+        timeout_seconds = float(control.get("timeoutSeconds") or DEFAULT_CONTROL_TIMEOUT_SECONDS)
+        rc, response, error_text = _request_ipc_v0(
+            endpoint,
+            {"method": "config.get", "params": {"appId": app_id}},
+            timeout_seconds=timeout_seconds,
+        )
+        if rc != 0:
+            return rc, {}, error_text or "config.get failed"
+        payload = response.get("response")
+        if not isinstance(payload, dict):
+            return 2, {}, "config.get returned invalid payload"
+        return 0, payload, ""
+
+    def _run_control_config_set(self, target_id: str, key: str, value: str) -> tuple[int, str]:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return 2, f"unknown target: {target_id}"
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            return 2, "ipc control is not configured"
+        endpoint = str(control.get("endpoint") or "")
+        app_id = str(control.get("appId") or "")
+        timeout_seconds = float(control.get("timeoutSeconds") or DEFAULT_CONTROL_TIMEOUT_SECONDS)
+        rc, response, error_text = _request_ipc_v0(
+            endpoint,
+            {"method": "config.set", "params": {"appId": app_id, "key": key, "value": value}},
+            timeout_seconds=timeout_seconds,
+        )
+        if rc != 0:
+            return rc, error_text or "config.set failed"
+        if not isinstance(response.get("response"), dict):
+            return 2, "config.set returned invalid payload"
+        return 0, ""
+
+    def _load_config_payload(self, target_id: str, show_action: str) -> tuple[dict[str, Any] | None, str]:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return None, f"unknown target: {target_id}"
+        if self._ipc_control_for_runtime(runtime) is not None:
+            rc, payload, error_text = self._run_control_config_get(target_id)
+            if rc != 0:
+                return None, error_text or f"config.get failed rc={rc}"
+            return payload, ""
+
+        rc, stdout, stderr, command_error = self._run_named_action_command(target_id, show_action)
+        if command_error:
+            return None, command_error
+        if rc != 0:
+            message = (stderr or stdout or f"show action failed rc={rc}").strip()
+            return None, message
+        payload, parse_error = try_extract_json_object(stdout)
+        if payload is None:
+            return None, parse_error
+        return payload, ""
+
+    def _set_config_value(self, target_id: str, set_action: str, key: str, value: str) -> tuple[int, str]:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return 2, f"unknown target: {target_id}"
+        if self._ipc_control_for_runtime(runtime) is not None:
+            return self._run_control_config_set(target_id, key, value)
+
+        rc, stdout, stderr, command_error = self._run_named_action_command(
+            target_id,
+            set_action,
+            replacements={"key": key, "value": value},
+        )
+        if command_error:
+            return 2, command_error
+        if rc != 0:
+            message = (stderr or stdout or f"set failed rc={rc}").strip()
+            return rc, message.splitlines()[0] if message else f"set failed rc={rc}"
+        return 0, ""
+
     def _refresh_config_editors(self, runtime: dict[str, Any], payload: dict[str, Any]) -> None:
         editors = runtime.get("configEditors")
         if not isinstance(editors, list):
@@ -2447,18 +2848,9 @@ class MonitorApp:
 
     def _load_config_editor_data(self, target_id: str, editor: dict[str, Any]) -> None:
         show_action = str(editor.get("showAction") or "").strip()
-        rc, stdout, stderr, command_error = self._run_named_action_command(target_id, show_action)
-        if command_error:
-            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", command_error))
-            return
-        if rc != 0:
-            message = (stderr or stdout or f"show action failed rc={rc}").strip()
-            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", message))
-            return
-
-        payload, parse_error = try_extract_json_object(stdout)
+        payload, load_error = self._load_config_payload(target_id, show_action)
         if payload is None:
-            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", parse_error))
+            self.root.after(0, lambda: self._finalize_config_editor_load(editor, [], "", load_error))
             return
 
         path_value = ""
@@ -2679,18 +3071,9 @@ class MonitorApp:
         set_action = str(editor.get("setAction") or "").strip()
 
         def run_set() -> None:
-            rc, stdout, stderr, command_error = self._run_named_action_command(
-                target_id,
-                set_action,
-                replacements={"key": key, "value": set_value},
-            )
-            if command_error:
-                self.root.after(0, lambda: validation_var.set(command_error))
-                return
+            rc, error_text = self._set_config_value(target_id, set_action, key, set_value)
             if rc != 0:
-                message = (stderr or stdout or f"set failed rc={rc}").strip()
-                first_line = message.splitlines()[0] if message else f"set failed rc={rc}"
-                self.root.after(0, lambda: validation_var.set(first_line))
+                self.root.after(0, lambda: validation_var.set(error_text))
                 return
             self.root.after(0, lambda: validation_var.set("saved"))
             self._mark_target_config_widgets_for_refresh(target_id)
@@ -3148,6 +3531,7 @@ class MonitorApp:
         error_obj = runtime.get("lastStatusError")
 
         def update() -> None:
+            self._refresh_action_catalog_async(target_id, force=False)
             for path, var in bindings:
                 value = json_path_get(payload, str(path))
                 var.set(render_value(value))
@@ -3237,10 +3621,7 @@ class MonitorApp:
         target = runtime.get("target")
         if not isinstance(target, dict):
             return
-        actions = target.get("actions")
-        if not isinstance(actions, list):
-            self.console_var.set("No actions configured.")
-            return
+        actions = self._action_items_for_runtime(runtime)
         action = next((item for item in actions if isinstance(item, dict) and str(item.get("name")) == action_name), None)
         if action is None:
             self.console_var.set(f"Action not found: {action_name}")
@@ -3252,7 +3633,9 @@ class MonitorApp:
 
         show_output_panel = bool(action.get("showOutputPanel", False))
         if show_output_panel:
-            tabs_widget = runtime.get("tabsWidget")
+            tabs_widget = runtime.get("actionOutputNotebook")
+            if not isinstance(tabs_widget, ttk.Notebook):
+                tabs_widget = runtime.get("tabsWidget")
             action_output_tab = runtime.get("actionOutputTab")
             if isinstance(tabs_widget, ttk.Notebook) and isinstance(action_output_tab, ttk.Frame):
                 try:
@@ -3260,12 +3643,122 @@ class MonitorApp:
                 except Exception:
                     pass
 
-        thread = threading.Thread(
-            target=self._run_action,
-            args=(target_id, action, action_value, action_args),
-            daemon=True,
-        )
+        control = self._ipc_control_for_runtime(runtime)
+        if control is not None:
+            thread = threading.Thread(
+                target=self._run_action_ipc,
+                args=(target_id, action, action_value, action_args),
+                daemon=True,
+            )
+        else:
+            thread = threading.Thread(
+                target=self._run_action,
+                args=(target_id, action, action_value, action_args),
+                daemon=True,
+            )
         thread.start()
+
+    def _run_action_ipc(
+        self,
+        target_id: str,
+        action: dict[str, Any],
+        action_value: str | None = None,
+        action_args: dict[str, str] | None = None,
+    ) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if not isinstance(runtime, dict):
+            return
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            self._append_action_output(target_id, "system", "ipc control is not configured")
+            return
+
+        endpoint = str(control.get("endpoint") or "")
+        app_id = str(control.get("appId") or "")
+        timeout_seconds = float(control.get("timeoutSeconds") or DEFAULT_CONTROL_TIMEOUT_SECONDS)
+        job_poll_ms = int(control.get("jobPollMs") or DEFAULT_CONTROL_JOB_POLL_MS)
+        job_timeout_seconds = float(control.get("jobTimeoutSeconds") or DEFAULT_CONTROL_JOB_TIMEOUT_SECONDS)
+
+        action_name = str(action.get("name") or "")
+        action_label = str(action.get("label") or action_name)
+        resolved_args: dict[str, Any] = {}
+        if isinstance(action_args, dict):
+            for key, value in action_args.items():
+                key_text = str(key).strip()
+                if key_text:
+                    resolved_args[key_text] = str(value)
+        if action_value is not None and "value" not in resolved_args:
+            resolved_args["value"] = str(action_value)
+
+        self._append_action_output(target_id, "system", f"running {action_label} via ipc")
+        self.root.after(0, lambda: self.console_var.set(f"running action: {action_label}"))
+
+        rc, invoke_response, invoke_error = _request_ipc_v0(
+            endpoint,
+            {
+                "method": "action.invoke",
+                "params": {
+                    "appId": app_id,
+                    "actionName": action_name,
+                    "args": resolved_args,
+                },
+            },
+            timeout_seconds=timeout_seconds,
+        )
+        if rc != 0:
+            self._append_action_output(target_id, "system", f"{action_label}: invoke failed: {invoke_error}")
+            self.root.after(0, lambda: self.console_var.set(f"action failed: {action_label}"))
+            return
+
+        invoke_body = invoke_response.get("response")
+        job_id = str(invoke_body.get("jobId") or "") if isinstance(invoke_body, dict) else ""
+        if not job_id:
+            self._append_action_output(target_id, "system", f"{action_label}: invoke returned no job id")
+            self.root.after(0, lambda: self.console_var.set(f"action failed: {action_label}"))
+            return
+
+        start_time = time.time()
+        terminal_states = {"succeeded", "failed", "timeout", "cancelled", "error"}
+        while True:
+            poll_rc, poll_response, poll_error = _request_ipc_v0(
+                endpoint,
+                {"method": "action.job.get", "params": {"appId": app_id, "jobId": job_id}},
+                timeout_seconds=timeout_seconds,
+            )
+            if poll_rc != 0:
+                self._append_action_output(target_id, "system", f"{action_label}: job poll failed: {poll_error}")
+                self.root.after(0, lambda: self.console_var.set(f"action failed: {action_label}"))
+                return
+
+            poll_body = poll_response.get("response")
+            state = str(poll_body.get("state") or "").strip().lower() if isinstance(poll_body, dict) else ""
+            if state in terminal_states:
+                stdout_text = str(poll_body.get("stdout") or "") if isinstance(poll_body, dict) else ""
+                stderr_text = str(poll_body.get("stderr") or "") if isinstance(poll_body, dict) else ""
+                if stdout_text.strip():
+                    for line in stdout_text.splitlines():
+                        self._append_action_output(target_id, "stdout", line)
+                if stderr_text.strip():
+                    for line in stderr_text.splitlines():
+                        self._append_action_output(target_id, "stderr", line)
+
+                if state == "succeeded":
+                    self._append_action_output(target_id, "system", f"{action_label}: finished state={state}")
+                    self.root.after(0, lambda: self.console_var.set(f"action done: {action_label}"))
+                else:
+                    self._append_action_output(target_id, "system", f"{action_label}: finished state={state}")
+                    self.root.after(0, lambda: self.console_var.set(f"action failed: {action_label}"))
+                return
+
+            if (time.time() - start_time) >= job_timeout_seconds:
+                self._append_action_output(
+                    target_id,
+                    "system",
+                    f"{action_label}: job timeout after {job_timeout_seconds:.1f}s",
+                )
+                self.root.after(0, lambda: self.console_var.set(f"action timeout: {action_label}"))
+                return
+            time.sleep(max(0.05, float(job_poll_ms) / 1000.0))
 
     def _run_action(
         self,
