@@ -386,6 +386,18 @@ def _validate_v2_control_payload(value: Any, source_path: Path, context: str) ->
     return _normalize_control_payload(value)
 
 
+def _validate_v2_bootstrap_payload(value: Any, source_path: Path, context: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} in {source_path} must be an object when provided.")
+    _assert_allowed_keys(value, {"configPath"}, f"{context} in {source_path}")
+    config_path = str(value.get("configPath") or "").strip()
+    if not config_path:
+        raise ValueError(f"{context}.configPath in {source_path} must be a non-empty string when provided.")
+    return {"configPath": config_path}
+
+
 def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, context: str) -> None:
     _assert_allowed_keys(
         target,
@@ -400,10 +412,12 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
             "ui",
             "actionOutput",
             "control",
+            "bootstrap",
         },
         f"{context} in {source_path}",
     )
     control = _validate_v2_control_payload(target.get("control"), source_path, f"{context}.control")
+    _validate_v2_bootstrap_payload(target.get("bootstrap"), source_path, f"{context}.bootstrap")
     ipc_mode = str(control.get("mode") or "") == "ipc"
 
     status = target.get("status")
