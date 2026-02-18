@@ -19,8 +19,8 @@ class LaunchMonitorTests(unittest.TestCase):
             bridge_target = bridge_repo / "config" / "gui" / "monitor.bridge.target.json"
             fixture_target.parent.mkdir(parents=True, exist_ok=True)
             bridge_target.parent.mkdir(parents=True, exist_ok=True)
-            fixture_target.write_text('{"configVersion":2,"id":"fixture","title":"Fixture","status":{"cwd":".","cmd":["python","-V"]},"ui":{"tabs":[]}}', encoding="utf-8")
-            bridge_target.write_text('{"configVersion":2,"id":"bridge","title":"Bridge","status":{"cwd":".","cmd":["python","-V"]},"ui":{"tabs":[]}}', encoding="utf-8")
+            fixture_target.write_text('{"configVersion":2,"id":"fixture","title":"Fixture","control":{"mode":"ipc","endpoint":"127.0.0.1:8766","appId":"fixture"},"ui":{"tabs":[]}}', encoding="utf-8")
+            bridge_target.write_text('{"configVersion":2,"id":"bridge","title":"Bridge","control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},"ui":{"tabs":[]}}', encoding="utf-8")
 
             config_out = Path(out_tmp) / "generated.json"
             cmd = [
@@ -54,7 +54,7 @@ class LaunchMonitorTests(unittest.TestCase):
             bridge_repo = Path(bridge_tmp)
             fixture_target = fixture_repo / "config" / "gui" / "monitor.fixture.target.json"
             fixture_target.parent.mkdir(parents=True, exist_ok=True)
-            fixture_target.write_text('{"configVersion":2,"id":"fixture","title":"Fixture","status":{"cwd":".","cmd":["python","-V"]},"ui":{"tabs":[]}}', encoding="utf-8")
+            fixture_target.write_text('{"configVersion":2,"id":"fixture","title":"Fixture","control":{"mode":"ipc","endpoint":"127.0.0.1:8766","appId":"fixture"},"ui":{"tabs":[]}}', encoding="utf-8")
 
             config_out = Path(out_tmp) / "generated-fixture-only.json"
             cmd = [

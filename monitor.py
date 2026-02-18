@@ -365,7 +365,7 @@ def _iter_v2_widgets(tab: dict[str, Any], context: str) -> list[tuple[str, dict[
 
 def _validate_v2_control_payload(value: Any, source_path: Path, context: str) -> dict[str, Any]:
     if value is None:
-        return {}
+        raise ValueError(f"{context} in {source_path} is missing required control object.")
     if not isinstance(value, dict):
         raise ValueError(f"{context} in {source_path} must be an object.")
 
@@ -375,15 +375,14 @@ def _validate_v2_control_payload(value: Any, source_path: Path, context: str) ->
         f"{context} in {source_path}",
     )
     mode = str(value.get("mode") or "").strip().lower()
-    if mode and mode != "ipc":
-        raise ValueError(f"{context}.mode in {source_path} must be 'ipc' when provided.")
-    if mode == "ipc":
-        endpoint = str(value.get("endpoint") or "").strip()
-        app_id = str(value.get("appId") or "").strip()
-        if not endpoint:
-            raise ValueError(f"{context}.endpoint in {source_path} must be a non-empty string when mode=ipc.")
-        if not app_id:
-            raise ValueError(f"{context}.appId in {source_path} must be a non-empty string when mode=ipc.")
+    if mode != "ipc":
+        raise ValueError(f"{context}.mode in {source_path} must be 'ipc'.")
+    endpoint = str(value.get("endpoint") or "").strip()
+    app_id = str(value.get("appId") or "").strip()
+    if not endpoint:
+        raise ValueError(f"{context}.endpoint in {source_path} must be a non-empty string when mode=ipc.")
+    if not app_id:
+        raise ValueError(f"{context}.appId in {source_path} must be a non-empty string when mode=ipc.")
     return _normalize_control_payload(value)
 
 
@@ -408,9 +407,10 @@ def _validate_v2_target_payload(target: dict[str, Any], source_path: Path, conte
     ipc_mode = str(control.get("mode") or "") == "ipc"
 
     status = target.get("status")
-    if not isinstance(status, dict):
-        raise ValueError(f"{context} in {source_path} is missing status object.")
-    _assert_allowed_keys(status, {"cwd", "cmd", "timeoutSeconds"}, f"{context}.status in {source_path}")
+    if status is not None:
+        if not isinstance(status, dict):
+            raise ValueError(f"{context}.status in {source_path} must be an object when provided.")
+        _assert_allowed_keys(status, {"timeoutSeconds"}, f"{context}.status in {source_path}")
 
     log_streams: set[str] = set()
     logs = target.get("logs")
@@ -1043,14 +1043,9 @@ def _normalize_v2_target(
     title = str(target.get("title") or tid)
 
     status = target.get("status")
-    if not isinstance(status, dict):
-        raise ValueError(f"v2 target '{tid}' in {source_path} is missing status object.")
-    status_cmd = _normalize_cmd(status.get("cmd"))
-    if not status_cmd:
-        raise ValueError(f"v2 target '{tid}' in {source_path} has empty status.cmd.")
-
-    status_cwd = str(status.get("cwd") or "").strip()
-    status_timeout = float(status.get("timeoutSeconds", default_timeout_seconds))
+    status_timeout = float(default_timeout_seconds)
+    if isinstance(status, dict):
+        status_timeout = float(status.get("timeoutSeconds", default_timeout_seconds))
 
     logs: list[dict[str, Any]] = []
     logs_raw = target.get("logs")
@@ -1086,7 +1081,7 @@ def _normalize_v2_target(
             cmd = _normalize_cmd(action.get("cmd"))
             if not cmd:
                 raise ValueError(f"v2 target '{tid}' in {source_path} action '{name}' has empty cmd.")
-            action_cwd = str(action.get("cwd") or status_cwd).strip()
+            action_cwd = str(action.get("cwd") or "").strip()
             normalized_args: list[dict[str, Any]] = []
             args_raw = action.get("args")
             if isinstance(args_raw, list):
@@ -1144,8 +1139,6 @@ def _normalize_v2_target(
         "title": title,
         "refreshSeconds": float(target.get("refreshSeconds", default_refresh_seconds)),
         "status": {
-            "cwd": status_cwd,
-            "cmd": status_cmd,
             "timeoutSeconds": status_timeout,
         },
         "logs": logs,
@@ -3472,35 +3465,41 @@ class MonitorApp:
         if runtime is None:
             return
 
-        status = target.get("status")
-        if not isinstance(status, dict):
-            self._set_status_error(tid, "status provider missing")
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            self._set_status_error(tid, "ipc control is not configured")
             self._render_target_status(tid)
             return
 
-        cmd = _normalize_cmd(status.get("cmd"))
-        cwd_text = str(status.get("cwd") or "").strip()
-        cwd = Path(cwd_text) if cwd_text else None
-        timeout_seconds = float(status.get("timeoutSeconds") or self.default_command_timeout_seconds)
-        if not cmd:
-            self._set_status_error(tid, "status.cmd is empty")
-            self._render_target_status(tid)
-            return
+        status = target.get("status")
+        status_timeout = 0.0
+        if isinstance(status, dict):
+            try:
+                status_timeout = float(status.get("timeoutSeconds") or 0.0)
+            except Exception:
+                status_timeout = 0.0
+        timeout_seconds = float(
+            status_timeout or control.get("timeoutSeconds") or self.default_command_timeout_seconds
+        )
+        endpoint = str(control.get("endpoint") or "")
+        app_id = str(control.get("appId") or "")
 
         payload: dict[str, Any] | None = None
         error_message = ""
         try:
-            rc, stdout, stderr = run_cmd(cmd, cwd, timeout_seconds=timeout_seconds)
+            rc, response_obj, error_text = _request_ipc_v0(
+                endpoint,
+                {"method": "status.get", "params": {"appId": app_id}},
+                timeout_seconds=timeout_seconds,
+            )
             if rc == 0:
-                parsed, parse_error = try_extract_json_object(stdout)
-                if parsed is not None:
-                    payload = parsed
+                response_payload = response_obj.get("response")
+                if isinstance(response_payload, dict):
+                    payload = response_payload
                 else:
-                    error_message = parse_error
+                    error_message = "status.get returned invalid payload"
             else:
-                error_message = stderr.strip() or f"status command exited rc={rc}"
-        except subprocess.TimeoutExpired:
-            error_message = f"status timeout after {timeout_seconds:.1f}s"
+                error_message = error_text or f"status.get failed rc={rc}"
         except Exception as ex:
             error_message = str(ex)
 
@@ -3508,7 +3507,7 @@ class MonitorApp:
             runtime["lastGoodStatus"] = payload
             runtime["lastStatusError"] = None
         else:
-            self._set_status_error(tid, error_message or "status command failed")
+            self._set_status_error(tid, error_message or "status.get failed")
 
         self._render_target_status(tid)
 

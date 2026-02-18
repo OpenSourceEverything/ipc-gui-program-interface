@@ -126,7 +126,7 @@
     "configVersion",
     "id",
     "title",
-    "status",
+    "control",
     "ui"
   ],
   "properties": {
@@ -151,22 +151,7 @@
     "status": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "cwd",
-        "cmd"
-      ],
       "properties": {
-        "cwd": {
-          "type": "string"
-        },
-        "cmd": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
         "timeoutSeconds": {
           "type": "number",
           "minimum": 0.1

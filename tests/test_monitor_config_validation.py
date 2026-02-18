@@ -18,7 +18,7 @@ class MonitorConfigValidationTests(unittest.TestCase):
             target = root / "target.json"
             _write_json(
                 target,
-                '{"configVersion":2,"id":"bridge","title":"Bridge","status":{"cwd":".","cmd":["python","-V"]},"ui":{"tabs":[]}}',
+                '{"configVersion":2,"id":"bridge","title":"Bridge","control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},"ui":{"tabs":[]}}',
             )
             root_config = root / "monitor_config.json"
             _write_json(
@@ -35,7 +35,7 @@ class MonitorConfigValidationTests(unittest.TestCase):
             target = root / "target.json"
             _write_json(
                 target,
-                '{"$schema":"./monitor.target.v2.schema.json","configVersion":2,"id":"bridge","title":"Bridge","status":{"cwd":".","cmd":["python","-V"]},"ui":{"tabs":[]}}',
+                '{"$schema":"./monitor.target.v2.schema.json","configVersion":2,"id":"bridge","title":"Bridge","control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},"ui":{"tabs":[]}}',
             )
             root_config = root / "monitor_config.json"
             _write_json(
@@ -54,7 +54,7 @@ class MonitorConfigValidationTests(unittest.TestCase):
             target = root / "target.json"
             _write_json(
                 target,
-                '{"configVersion":2,"id":"bridge","title":"Bridge","status":{"cwd":".","cmd":["python","-V"]},"ui":{"tabs":[]},"unknownKey":123}',
+                '{"configVersion":2,"id":"bridge","title":"Bridge","control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},"ui":{"tabs":[]},"unknownKey":123}',
             )
             root_config = root / "monitor_config.json"
             _write_json(
@@ -73,7 +73,7 @@ class MonitorConfigValidationTests(unittest.TestCase):
                 target,
                 (
                     '{"configVersion":2,"id":"bridge","title":"Bridge",'
-                    '"status":{"cwd":".","cmd":["python","-V"]},'
+                    '"control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},'
                     '"ui":{"tabs":[{"id":"cfg","title":"Config","widgets":['
                     '{"type":"config_editor","title":"Editor","showAction":"config_show","setAction":"config_set_key"}'
                     ']}]},'
@@ -99,7 +99,7 @@ class MonitorConfigValidationTests(unittest.TestCase):
                 target,
                 (
                     '{"configVersion":2,"id":"bridge","title":"Bridge",'
-                    '"status":{"cwd":".","cmd":["python","-V"]},'
+                    '"control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},'
                     '"ui":{"tabs":[{"id":"actions","title":"Actions","widgets":['
                     '{"type":"action_output","title":"Output"}'
                     ']}]}}'
@@ -123,7 +123,6 @@ class MonitorConfigValidationTests(unittest.TestCase):
                 target,
                 (
                     '{"configVersion":2,"id":"bridge","title":"Bridge",'
-                    '"status":{"cwd":".","cmd":["python","-V"]},'
                     '"control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},'
                     '"ui":{"tabs":[{"id":"actions","title":"Actions","widgets":['
                     '{"type":"action_select","title":"Run Action"},'
@@ -151,9 +150,29 @@ class MonitorConfigValidationTests(unittest.TestCase):
                 target,
                 (
                     '{"configVersion":2,"id":"bridge","title":"Bridge",'
-                    '"status":{"cwd":".","cmd":["python","-V"]},'
                     '"control":{"mode":"ipc","appId":"bridge"},'
                     '"ui":{"tabs":[{"id":"actions","title":"Actions","widgets":[{"type":"action_output","title":"Output"}]}]}}'
+                ),
+            )
+            root_config = root / "monitor_config.json"
+            _write_json(
+                root_config,
+                '{"refreshSeconds":1.0,"commandTimeoutSeconds":10.0,"includeFiles":["target.json"]}',
+            )
+            with self.assertRaises(ValueError):
+                monitor.load_monitor_config(root_config)
+
+    def test_rejects_status_cmd_in_v2_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target.json"
+            _write_json(
+                target,
+                (
+                    '{"configVersion":2,"id":"bridge","title":"Bridge",'
+                    '"control":{"mode":"ipc","endpoint":"127.0.0.1:8765","appId":"bridge"},'
+                    '"status":{"cmd":["python","-V"]},'
+                    '"ui":{"tabs":[{"id":"status","title":"Status","widgets":[]}]}}'
                 ),
             )
             root_config = root / "monitor_config.json"
