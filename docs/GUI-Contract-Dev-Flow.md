@@ -6,7 +6,10 @@ This monitor is contract-driven. Repo target files, action payloads, and widget 
 
 1. Canonical monitor engine + schema live only in this repo:
    - `monitor.py`
-   - `schemas/monitor.target.v2.schema.json`
+   - `contract/schemas/monitor.target.v2.schema.json`
+   - `contract/schemas/generic-process-interface.v1.schema.json`
+   - `contract/golden/*`
+   - compatibility mirror for deployed tooling: `schemas/*`
 2. App repos only provide:
    - target mapping (`config/gui/monitor.<target>.target.json`)
    - action providers (`dev config show --json`, `dev config set <key> <value>`)
@@ -21,8 +24,14 @@ Run after any GUI/schema/target/config-contract change:
 ```bash
 python monitor.py --config monitor_config.json --validate-config
 python scripts/check_target_contract.py --target <repo>/config/gui/monitor.<target>.target.json
+python scripts/ci_target_policy.py --fixture-repo <fixture_repo> --bridge-repo <bridge_repo>
 python scripts/launch_monitor.py --fixture-repo <fixture_repo> --bridge-repo <bridge_repo> --validate-only
 ```
+
+Policy split:
+
+- Keep `check_target_contract.py` as contract correctness.
+- Run `ci_target_policy.py` as a separate CI job for strict UI policy (`--enforce-top-tabs`).
 
 ## Repo Change Matrix
 

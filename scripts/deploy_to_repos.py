@@ -212,8 +212,10 @@ def deploy_to_repo(source_root: Path, repo_root: Path, role: str, clean: bool) -
         "cli.schema.json",
         "summary.md",
         "monitor.target.v2.example.json",
+        "contract",
         "schemas",
         "scripts/launch_monitor.py",
+        "scripts/ci_target_policy.py",
         "scripts/sync_target_schema.py",
     ]
     for item in runtime_items:

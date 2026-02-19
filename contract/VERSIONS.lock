@@ -1,0 +1,7 @@
+{
+  "monitorRootSchema": "v1",
+  "monitorTargetSchema": "v2",
+  "genericProcessInterfaceSchema": "v1",
+  "goldenSet": "2026-02-19",
+  "targetTabPolicy": "top-tabs-v1"
+}

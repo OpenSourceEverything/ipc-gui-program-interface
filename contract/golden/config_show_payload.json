@@ -1,0 +1,29 @@
+{
+  "paths": [
+    {
+      "key": "profilePath",
+      "value": "C:/repos/sample/config/profiles/sim.json"
+    }
+  ],
+  "entries": [
+    {
+      "key": "profile",
+      "value": "sim",
+      "path": "C:/repos/sample/config/profiles/sim.json",
+      "settable": true,
+      "allowed": [
+        "sim",
+        "lab"
+      ]
+    },
+    {
+      "key": "mode",
+      "value": "sim",
+      "settable": true,
+      "allowed": [
+        "sim",
+        "live"
+      ]
+    }
+  ]
+}

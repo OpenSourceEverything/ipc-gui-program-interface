@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ipc-gui-program-interface/schemas/monitor.root.schema.json",
+  "title": "Monitor Root Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "refreshSeconds",
+    "commandTimeoutSeconds",
+    "includeFiles"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "minimum": 0.2
+    },
+    "commandTimeoutSeconds": {
+      "type": "number",
+      "minimum": 0.1
+    },
+    "actionOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxLines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1024
+        }
+      }
+    },
+    "includeFiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

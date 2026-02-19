@@ -13,7 +13,17 @@ from typing import Any
 
 
 REQUIRED_TOP_TAB_TITLES = {"status", "config", "actions", "logs"}
-REQUIRED_BASE_STATUS_KEYS = ("appId", "appTitle", "running", "pid", "hostRunning", "hostPid")
+REQUIRED_BASE_STATUS_KEYS = (
+    "interfaceName",
+    "interfaceVersion",
+    "appId",
+    "appTitle",
+    "bootId",
+    "running",
+    "pid",
+    "hostRunning",
+    "hostPid",
+)
 
 
 def normalize_cmd(value: Any) -> list[str]:
@@ -152,6 +162,57 @@ def _matches_widget_filters(action_name: str, widget: dict[str, Any]) -> bool:
     return True
 
 
+def is_ipc_mode(target: dict[str, Any]) -> bool:
+    control = target.get("control")
+    if not isinstance(control, dict):
+        return False
+    return str(control.get("mode") or "").strip().lower() == "ipc"
+
+
+def normalize_config_paths(paths_raw: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if isinstance(paths_raw, list):
+        for item in paths_raw:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key:
+                continue
+            value = item.get("value")
+            if value is None and "path" in item:
+                value = item.get("path")
+            normalized.append({"key": key, "value": value})
+        return normalized
+
+    if isinstance(paths_raw, dict):
+        for key_raw, value in paths_raw.items():
+            key = str(key_raw or "").strip()
+            if not key:
+                continue
+            normalized.append({"key": key, "value": value})
+    return normalized
+
+
+def normalize_config_entries(entries_raw: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(entries_raw, list):
+        return normalized
+    for item in entries_raw:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        key = str(entry.get("key") or "").strip()
+        if not key:
+            continue
+        allowed = entry.get("allowed")
+        if not isinstance(allowed, list):
+            legacy_allowed = entry.get("allowedValues")
+            if isinstance(legacy_allowed, list):
+                entry["allowed"] = list(legacy_allowed)
+        normalized.append(entry)
+    return normalized
+
+
 def run_action(action: dict[str, Any]) -> tuple[int, str, str, str]:
     cmd = normalize_cmd(action.get("cmd"))
     if not cmd:
@@ -206,6 +267,7 @@ def main() -> int:
     parser.add_argument("--target", required=True, help="Path to monitor.<name>.target.json")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--skip-status-check", action="store_true")
+    parser.add_argument("--enforce-top-tabs", action="store_true")
     args = parser.parse_args()
 
     target_path = Path(args.target).resolve()
@@ -220,6 +282,7 @@ def main() -> int:
     if not isinstance(target, dict):
         print(f"target must be an object: {target_path}", file=sys.stderr)
         return 2
+    ipc_mode = is_ipc_mode(target)
 
     actions_list = target.get("actions")
     actions: dict[str, dict[str, Any]] = {}
@@ -240,70 +303,97 @@ def main() -> int:
 
     errors: list[str] = []
 
-    present_top_tabs = top_tab_titles(tabs)
-    missing_top_tabs = sorted(REQUIRED_TOP_TAB_TITLES - present_top_tabs)
-    if missing_top_tabs:
-        errors.append(f"missing required top-level tabs: {', '.join(missing_top_tabs)}")
+    for widget in config_widgets:
+        if not widget["showAction"]:
+            errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] showAction must be non-empty")
+        if not widget["setAction"]:
+            errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] setAction must be non-empty")
+
+    if args.enforce_top_tabs:
+        present_top_tabs = top_tab_titles(tabs)
+        missing_top_tabs = sorted(REQUIRED_TOP_TAB_TITLES - present_top_tabs)
+        if missing_top_tabs:
+            errors.append(f"missing required top-level tabs: {', '.join(missing_top_tabs)}")
 
     duplicates = sorted({name for name in action_names_in_order if action_names_in_order.count(name) > 1})
     if duplicates:
         errors.append(f"duplicate action names: {', '.join(duplicates)}")
 
-    for widget in action_widgets:
-        include_commands = widget.get("includeCommands")
-        if isinstance(include_commands, list) and include_commands:
-            missing_cmd = [name for name in include_commands if name not in actions]
-            if missing_cmd:
-                errors.append(
-                    f"{widget['tabPath']}[{widget['widgetIndex']}] includeCommands missing actions: {', '.join(missing_cmd)}"
-                )
-            continue
-
-        include_regex = str(widget.get("includeRegex") or "").strip()
-        if include_regex:
-            try:
-                re.compile(include_regex)
-            except re.error as ex:
-                errors.append(
-                    f"{widget['tabPath']}[{widget['widgetIndex']}] invalid includeRegex '{include_regex}': {ex}"
-                )
+    if not ipc_mode:
+        for widget in action_widgets:
+            include_commands = widget.get("includeCommands")
+            if isinstance(include_commands, list) and include_commands:
+                missing_cmd = [name for name in include_commands if name not in actions]
+                if missing_cmd:
+                    errors.append(
+                        f"{widget['tabPath']}[{widget['widgetIndex']}] includeCommands missing actions: {', '.join(missing_cmd)}"
+                    )
                 continue
 
-        matched = [name for name in actions.keys() if _matches_widget_filters(name, widget)]
-        if not matched:
-            errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] action filter resolves to zero actions")
+            include_regex = str(widget.get("includeRegex") or "").strip()
+            if include_regex:
+                try:
+                    re.compile(include_regex)
+                except re.error as ex:
+                    errors.append(
+                        f"{widget['tabPath']}[{widget['widgetIndex']}] invalid includeRegex '{include_regex}': {ex}"
+                    )
+                    continue
+
+            matched = [name for name in actions.keys() if _matches_widget_filters(name, widget)]
+            if not matched:
+                errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] action filter resolves to zero actions")
 
     if not args.skip_status_check:
         status_cfg = target.get("status")
-        if not isinstance(status_cfg, dict):
-            errors.append("status section missing or invalid")
-        else:
-            status_action = {
-                "name": "_status_check",
-                "cmd": status_cfg.get("cmd"),
-                "cwd": status_cfg.get("cwd"),
-                "timeoutSeconds": status_cfg.get("timeoutSeconds", 30.0),
-            }
-            rc, stdout, stderr, err = run_action(status_action)
-            if err:
-                errors.append(f"status.cmd: {err}")
-            elif rc != 0:
-                message = (stderr or stdout or f"rc={rc}").strip().splitlines()[0]
-                errors.append(f"status.cmd failed ({message})")
+        if ipc_mode:
+            if status_cfg is not None and not isinstance(status_cfg, dict):
+                errors.append("status section must be an object when present")
+            if isinstance(status_cfg, dict):
+                extras = sorted(set(str(key) for key in status_cfg.keys()) - {"timeoutSeconds"})
+                if extras:
+                    errors.append(f"status supports timeoutSeconds only in IPC mode; unsupported: {', '.join(extras)}")
+            control = target.get("control")
+            if not isinstance(control, dict):
+                errors.append("control section missing or invalid for IPC mode")
             else:
-                payload, parse_error = try_extract_json_object(stdout)
-                if payload is None:
-                    errors.append(f"status.cmd: {parse_error}")
+                endpoint = str(control.get("endpoint") or "").strip()
+                app_id = str(control.get("appId") or "").strip()
+                if not endpoint:
+                    errors.append("control.endpoint must be non-empty in IPC mode")
+                if not app_id:
+                    errors.append("control.appId must be non-empty in IPC mode")
+        else:
+            if not isinstance(status_cfg, dict):
+                errors.append("status section missing or invalid")
+            else:
+                status_action = {
+                    "name": "_status_check",
+                    "cmd": status_cfg.get("cmd"),
+                    "cwd": status_cfg.get("cwd"),
+                    "timeoutSeconds": status_cfg.get("timeoutSeconds", 30.0),
+                }
+                rc, stdout, stderr, err = run_action(status_action)
+                if err:
+                    errors.append(f"status.cmd: {err}")
+                elif rc != 0:
+                    message = (stderr or stdout or f"rc={rc}").strip().splitlines()[0]
+                    errors.append(f"status.cmd failed ({message})")
                 else:
-                    errors.extend(validate_status_payload(payload))
+                    payload, parse_error = try_extract_json_object(stdout)
+                    if payload is None:
+                        errors.append(f"status.cmd: {parse_error}")
+                    else:
+                        errors.extend(validate_status_payload(payload))
 
-    for widget in config_widgets:
-        show_action = widget["showAction"]
-        set_action = widget["setAction"]
-        if show_action not in actions:
-            errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] showAction missing: {show_action}")
-        if set_action not in actions:
-            errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] setAction missing: {set_action}")
+    if not ipc_mode:
+        for widget in config_widgets:
+            show_action = widget["showAction"]
+            set_action = widget["setAction"]
+            if show_action not in actions:
+                errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] showAction missing: {show_action}")
+            if set_action not in actions:
+                errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] setAction missing: {set_action}")
 
     show_payloads: dict[str, dict[str, Any]] = {}
     show_action_names = sorted({item["showAction"] for item in config_widgets if item["showAction"] in actions})
@@ -327,10 +417,8 @@ def main() -> int:
         payload = show_payloads.get(show_action)
         if not isinstance(payload, dict):
             continue
-        entries_raw = payload.get("entries")
-        paths_raw = payload.get("paths")
-        entries = [item for item in entries_raw if isinstance(item, dict)] if isinstance(entries_raw, list) else []
-        paths = [item for item in paths_raw if isinstance(item, dict)] if isinstance(paths_raw, list) else []
+        entries = normalize_config_entries(payload.get("entries"))
+        paths = normalize_config_paths(payload.get("paths"))
         entry_by_key = {str(item.get("key") or "").strip(): item for item in entries if str(item.get("key") or "").strip()}
         path_keys = {str(item.get("key") or "").strip() for item in paths if str(item.get("key") or "").strip()}
 
@@ -348,6 +436,8 @@ def main() -> int:
                 errors.append(f"{widget['tabPath']}[{widget['widgetIndex']}] key not in showAction entries: {key}")
                 continue
             allowed = entry.get("allowed")
+            if not isinstance(allowed, list):
+                allowed = entry.get("allowedValues")
             if not isinstance(allowed, list) or len(allowed) == 0:
                 errors.append(
                     f"{widget['tabPath']}[{widget['widgetIndex']}] key {key} must expose non-empty allowed[] list"

@@ -32,7 +32,14 @@ python monitor.py --config monitor_config.json --validate-config
 `schemas/cli.schema.json` defines the normalized command-catalog contract used by the
 infrastructure overhaul plan.
 
-Monitor schemas:
+Canonical contracts:
+
+- `contract/schemas/monitor.root.schema.json`
+- `contract/schemas/monitor.target.v2.schema.json`
+- `contract/schemas/generic-process-interface.v1.schema.json`
+- `contract/golden/*`
+
+Compatibility mirror (used by deployed runtime/scripts):
 
 - `schemas/monitor.root.schema.json`
 - `schemas/monitor.target.v2.schema.json`
@@ -45,6 +52,7 @@ python scripts/sync_target_schema.py
 python scripts/launch_monitor.py --fixture-repo \\H3FT06-40318\c\40318-SOFT --bridge-repo C:\repos\test-fixture-data-bridge
 python scripts/check_target_contract.py --target C:\repos\test-fixture-data-bridge\config\gui\monitor.bridge.target.json
 python scripts/check_target_contract.py --target \\H3FT06-40318\c\40318-SOFT\config\gui\monitor.fixture.target.json
+python scripts/ci_target_policy.py --fixture-repo \\H3FT06-40318\c\40318-SOFT --bridge-repo C:\repos\test-fixture-data-bridge
 ```
 
 Key flags:
@@ -54,6 +62,11 @@ Key flags:
 - `--include-fixture` / `--include-bridge`
 - `--config-out`
 - `--validate-only`
+
+Strict policy CI gate:
+
+- `scripts/ci_target_policy.py` runs `check_target_contract.py --enforce-top-tabs` for selected targets.
+- use this as a separate CI job so contract-shape validation and UI-policy validation are independently visible.
 - `--no-launch`
 
 Paired runtime note:
@@ -83,7 +96,7 @@ Run in either repo:
 ## Config Versions
 
 - `configVersion: 2` = new explicit target model (preferred for new files).
-- Missing `configVersion` = assumed `v1` (back-compat only).
+- Missing `configVersion` = assumed `v1` (deprecated back-compat only).
 - No heuristic mixing: v2 is only parsed when `configVersion` is explicitly `2`.
 
 ## Root Config
@@ -131,7 +144,7 @@ Target shape:
 - `ui.tabs[]`:
   - each tab has `id`, `title`, and at least one of `widgets[]` or `children[]`
   - tab nesting is supported recursively through `children[]`
-- widget types: `kv`, `table`, `rows_table`, `log`, `button`, `profile_select`, `action_map`, `action_select`, `text_block`, `file_view`, `config_editor`, `config_file_select`
+- widget types: `kv`, `table`, `rows_table`, `log`, `button`, `profile_select`, `action_map`, `action_select`, `action_output`, `text_block`, `file_view`, `config_editor`, `config_file_select`
 - `actionOutput.maxLines`, `actionOutput.maxBytes` (optional)
 
 `rows_table` widget contract:
@@ -149,8 +162,9 @@ Target shape:
   - `setAction` -> action command that accepts `{key}` and `{value}` placeholders
 - optional:
   - `pathJsonpath` or `pathLiteral` for live status path display
-  - `pathKey` to resolve path from `showAction` payload `paths[]`
+  - `pathKey` to resolve path from `showAction` payload `paths[]` (`[{key,value}]` canonical)
   - `includePrefix`, `includeKeys[]`, `excludeKeys[]`, `settableOnly`, `reloadLabel`
+  - `allowedValues[]` is accepted as a legacy alias of `allowed[]` during migration
 
 ## Runtime Semantics
 

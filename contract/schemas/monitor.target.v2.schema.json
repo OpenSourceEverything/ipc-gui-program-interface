@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ipc-gui-program-interface/schemas/monitor.target.v2.schema.json",
+  "title": "Monitor Target Config v2",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "widget": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "kv",
+            "table",
+            "rows_table",
+            "log",
+            "button",
+            "profile_select",
+            "action_map",
+            "action_select",
+            "action_output",
+            "text_block",
+            "file_view",
+            "config_editor",
+            "config_file_select"
+          ]
+        }
+      }
+    },
+    "actionArg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "int",
+            "float",
+            "bool"
+          ]
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "optionsJsonpath": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        }
+      }
+    },
+    "tab": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "widgets"
+          ]
+        },
+        {
+          "required": [
+            "children"
+          ]
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "widgets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/widget"
+          }
+        },
+        "children": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tab"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "configVersion",
+    "id",
+    "title",
+    "control",
+    "ui"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "configVersion": {
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "minimum": 0.2
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutSeconds": {
+          "type": "number",
+          "minimum": 0.1
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ipc"
+          ]
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeoutSeconds": {
+          "type": "number",
+          "minimum": 0.1
+        },
+        "jobPollMs": {
+          "type": "integer",
+          "minimum": 50
+        },
+        "jobTimeoutSeconds": {
+          "type": "number",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "ipc"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "endpoint",
+              "appId"
+            ]
+          }
+        }
+      ]
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "configPath": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "logs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stream",
+          "title",
+          "glob"
+        ],
+        "properties": {
+          "stream": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "glob": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tailLines": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "maxLineBytes": {
+            "type": "integer",
+            "minimum": 64
+          },
+          "pollMs": {
+            "type": "integer",
+            "minimum": 50
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "allowMissing": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "label",
+          "cwd",
+          "cmd"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "cmd": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "minimum": 0.1
+          },
+          "confirm": {
+            "type": "string"
+          },
+          "showOutputPanel": {
+            "type": "boolean"
+          },
+          "mutex": {
+            "type": "string"
+          },
+          "detached": {
+            "type": "boolean"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/actionArg"
+            }
+          }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tabs"
+      ],
+      "properties": {
+        "tabs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tab"
+          }
+        }
+      }
+    },
+    "actionOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxLines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1024
+        }
+      }
+    }
+  }
+}

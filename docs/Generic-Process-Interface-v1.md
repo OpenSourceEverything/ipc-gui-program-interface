@@ -18,7 +18,7 @@ v1 is contract-first and transport-agnostic.
 
 ## Contract Modules
 1. Status module
-- Canonical payload schema: `schemas/generic-process-interface.v1.schema.json#/$defs/statusPayload`
+- Canonical payload schema: `contract/schemas/generic-process-interface.v1.schema.json#/$defs/statusPayload`
 - Required base keys:
   - `interfaceName = generic-process-interface`
   - `interfaceVersion = 1`
@@ -27,15 +27,21 @@ v1 is contract-first and transport-agnostic.
   - `running`, `pid`, `hostRunning`, `hostPid`
 
 2. Actions module
-- Canonical descriptor schema: `schemas/generic-process-interface.v1.schema.json#/$defs/actionDescriptor`
+- Canonical descriptor schema: `contract/schemas/generic-process-interface.v1.schema.json#/$defs/actionDescriptor`
 - Each app defines only its own actions.
 - GUI action selectors must scope to local action names.
 
 3. Config module
-- Canonical show payload schema: `schemas/generic-process-interface.v1.schema.json#/$defs/configShowPayload`
+- Canonical show payload schema: `contract/schemas/generic-process-interface.v1.schema.json#/$defs/configShowPayload`
 - Supports:
   - active file selection (`config_file_select`)
   - field editing (`config_editor`)
+- Canonical `configShowPayload` shape:
+  - `paths`: list of `{key, value}`
+  - `entries`: list of objects with `key`, `value`, optional `allowed`, optional `path`
+- Compatibility accepted during migration:
+  - `paths` object map (`{ "key": "value" }`)
+  - `allowedValues` as legacy alias for `allowed`
 
 ## App Modeling Rules
 1. 40318, PLC simulator, BLE simulator, and bridge are separate app identities in GUI.
