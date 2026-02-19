@@ -29,8 +29,6 @@ MIN_REFRESH_TICK_SECONDS = 0.2
 DEFAULT_CONTROL_TIMEOUT_SECONDS = 8.0
 DEFAULT_CONTROL_JOB_POLL_MS = 200
 DEFAULT_CONTROL_JOB_TIMEOUT_SECONDS = 120.0
-
-
 def _no_window_creationflags() -> int:
     if os.name != "nt":
         return 0
@@ -70,6 +68,11 @@ def _require_string_list(value: Any, context: str) -> list[str]:
     if not result:
         raise ValueError(f"{context} must contain at least one item.")
     return result
+
+
+def _order_top_level_tabs(tabs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Top-level order is defined by ui.tabs[] sequence in the target config.
+    return [tab for tab in tabs if isinstance(tab, dict)]
 
 
 def _normalize_control_payload(value: Any) -> dict[str, Any]:
@@ -1594,11 +1597,19 @@ class MonitorApp:
 
         ui = target.get("ui") if isinstance(target.get("ui"), dict) else {}
         ui_tabs = ui.get("tabs") if isinstance(ui.get("tabs"), list) else []
-        self._build_tabs(tabs, runtime, ui_tabs)
+        self._build_tabs(tabs, runtime, ui_tabs, top_level=True)
         self._refresh_action_catalog_async(tid, force=True)
 
-    def _build_tabs(self, tabs_widget: ttk.Notebook, runtime: dict[str, Any], tabs: list[dict[str, Any]]) -> None:
-        for tab in tabs:
+    def _build_tabs(
+        self,
+        tabs_widget: ttk.Notebook,
+        runtime: dict[str, Any],
+        tabs: list[dict[str, Any]],
+        *,
+        top_level: bool = False,
+    ) -> None:
+        tabs_to_render = _order_top_level_tabs(tabs) if top_level else tabs
+        for tab in tabs_to_render:
             if not isinstance(tab, dict):
                 continue
             self._build_single_tab(tabs_widget, runtime, tab)
@@ -1620,7 +1631,7 @@ class MonitorApp:
             split.add(child_slot, weight=1)
             child_tabs = ttk.Notebook(child_slot)
             child_tabs.pack(fill=tk.BOTH, expand=True)
-            self._build_tabs(child_tabs, runtime, children)
+            self._build_tabs(child_tabs, runtime, children, top_level=False)
             return
 
         if widgets:
@@ -1630,7 +1641,7 @@ class MonitorApp:
         if children:
             child_tabs = ttk.Notebook(tab_frame)
             child_tabs.pack(fill=tk.BOTH, expand=True, padx=4, pady=6)
-            self._build_tabs(child_tabs, runtime, children)
+            self._build_tabs(child_tabs, runtime, children, top_level=False)
             return
 
         ttk.Label(tab_frame, text="No widgets configured.").pack(fill=tk.X, padx=8, pady=8)
@@ -1917,15 +1928,96 @@ class MonitorApp:
         return control
 
     def _action_items_for_runtime(self, runtime: dict[str, Any]) -> list[dict[str, Any]]:
-        control = self._ipc_control_for_runtime(runtime)
-        if control is not None:
-            catalog_items = runtime.get("actionCatalogItems")
-            if isinstance(catalog_items, list):
-                return [item for item in catalog_items if isinstance(item, dict)]
-            return []
         target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
-        actions = target.get("actions") if isinstance(target.get("actions"), list) else []
-        return [item for item in actions if isinstance(item, dict)]
+        target_actions_raw = target.get("actions") if isinstance(target.get("actions"), list) else []
+        target_actions = [item for item in target_actions_raw if isinstance(item, dict)]
+
+        control = self._ipc_control_for_runtime(runtime)
+        if control is None:
+            return target_actions
+
+        catalog_items = runtime.get("actionCatalogItems")
+        catalog_actions = [item for item in catalog_items if isinstance(item, dict)] if isinstance(catalog_items, list) else []
+        if not catalog_actions:
+            return target_actions
+
+        merged: list[dict[str, Any]] = list(catalog_actions)
+        seen_names = {
+            str(item.get("name") or "").strip()
+            for item in catalog_actions
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for item in target_actions:
+            name = str(item.get("name") or "").strip()
+            if name and name in seen_names:
+                continue
+            merged.append(item)
+        return merged
+
+    def _has_local_action_command(self, target: dict[str, Any], action_name: str) -> bool:
+        action = self._find_target_action(target, action_name)
+        if not isinstance(action, dict):
+            return False
+        return bool(_normalize_cmd(action.get("cmd")))
+
+    def _action_prefers_local_command(self, action: dict[str, Any]) -> bool:
+        return bool(_normalize_cmd(action.get("cmd")))
+
+    def _invoke_action(
+        self,
+        target_id: str,
+        action_name: str,
+        action_value: str | None = None,
+        action_args: dict[str, str] | None = None,
+    ) -> None:
+        runtime = self.target_runtime.get(target_id)
+        if runtime is None:
+            return
+        target = runtime.get("target")
+        if not isinstance(target, dict):
+            return
+        actions = self._action_items_for_runtime(runtime)
+        action = next((item for item in actions if isinstance(item, dict) and str(item.get("name")) == action_name), None)
+        if action is None:
+            self.console_var.set(f"Action not found: {action_name}")
+            return
+
+        confirm_text = str(action.get("confirm") or "").strip()
+        if confirm_text and not messagebox.askyesno("Confirm Action", confirm_text):
+            return
+
+        show_output_panel = bool(action.get("showOutputPanel", False))
+        if show_output_panel:
+            tabs_widget = runtime.get("actionOutputNotebook")
+            if not isinstance(tabs_widget, ttk.Notebook):
+                tabs_widget = runtime.get("tabsWidget")
+            action_output_tab = runtime.get("actionOutputTab")
+            if isinstance(tabs_widget, ttk.Notebook) and isinstance(action_output_tab, ttk.Frame):
+                try:
+                    tabs_widget.select(action_output_tab)
+                except Exception:
+                    pass
+
+        control = self._ipc_control_for_runtime(runtime)
+        if self._action_prefers_local_command(action):
+            thread = threading.Thread(
+                target=self._run_action,
+                args=(target_id, action, action_value, action_args),
+                daemon=True,
+            )
+        elif control is not None:
+            thread = threading.Thread(
+                target=self._run_action_ipc,
+                args=(target_id, action, action_value, action_args),
+                daemon=True,
+            )
+        else:
+            thread = threading.Thread(
+                target=self._run_action,
+                args=(target_id, action, action_value, action_args),
+                daemon=True,
+            )
+        thread.start()
 
     def _refresh_action_catalog_async(self, target_id: str, *, force: bool = False) -> None:
         runtime = self.target_runtime.get(target_id)
@@ -2831,11 +2923,13 @@ class MonitorApp:
         runtime = self.target_runtime.get(target_id)
         if not isinstance(runtime, dict):
             return None, f"unknown target: {target_id}"
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
         if self._ipc_control_for_runtime(runtime) is not None:
             rc, payload, error_text = self._run_control_config_get(target_id)
-            if rc != 0:
+            if rc == 0:
+                return payload, ""
+            if not self._has_local_action_command(target, show_action):
                 return None, error_text or f"config.get failed rc={rc}"
-            return payload, ""
 
         rc, stdout, stderr, command_error = self._run_named_action_command(target_id, show_action)
         if command_error:
@@ -2852,8 +2946,13 @@ class MonitorApp:
         runtime = self.target_runtime.get(target_id)
         if not isinstance(runtime, dict):
             return 2, f"unknown target: {target_id}"
+        target = runtime.get("target") if isinstance(runtime.get("target"), dict) else {}
         if self._ipc_control_for_runtime(runtime) is not None:
-            return self._run_control_config_set(target_id, key, value)
+            rc, error_text = self._run_control_config_set(target_id, key, value)
+            if rc == 0:
+                return 0, ""
+            if not self._has_local_action_command(target, set_action):
+                return rc, error_text
 
         rc, stdout, stderr, command_error = self._run_named_action_command(
             target_id,
@@ -3687,56 +3786,6 @@ class MonitorApp:
                 widget.insert(tk.END, "(no data)\n")
             if isinstance(path_var, tk.StringVar):
                 path_var.set(active_path or "-")
-
-    def _invoke_action(
-        self,
-        target_id: str,
-        action_name: str,
-        action_value: str | None = None,
-        action_args: dict[str, str] | None = None,
-    ) -> None:
-        runtime = self.target_runtime.get(target_id)
-        if runtime is None:
-            return
-        target = runtime.get("target")
-        if not isinstance(target, dict):
-            return
-        actions = self._action_items_for_runtime(runtime)
-        action = next((item for item in actions if isinstance(item, dict) and str(item.get("name")) == action_name), None)
-        if action is None:
-            self.console_var.set(f"Action not found: {action_name}")
-            return
-
-        confirm_text = str(action.get("confirm") or "").strip()
-        if confirm_text and not messagebox.askyesno("Confirm Action", confirm_text):
-            return
-
-        show_output_panel = bool(action.get("showOutputPanel", False))
-        if show_output_panel:
-            tabs_widget = runtime.get("actionOutputNotebook")
-            if not isinstance(tabs_widget, ttk.Notebook):
-                tabs_widget = runtime.get("tabsWidget")
-            action_output_tab = runtime.get("actionOutputTab")
-            if isinstance(tabs_widget, ttk.Notebook) and isinstance(action_output_tab, ttk.Frame):
-                try:
-                    tabs_widget.select(action_output_tab)
-                except Exception:
-                    pass
-
-        control = self._ipc_control_for_runtime(runtime)
-        if control is not None:
-            thread = threading.Thread(
-                target=self._run_action_ipc,
-                args=(target_id, action, action_value, action_args),
-                daemon=True,
-            )
-        else:
-            thread = threading.Thread(
-                target=self._run_action,
-                args=(target_id, action, action_value, action_args),
-                daemon=True,
-            )
-        thread.start()
 
     def _run_action_ipc(
         self,

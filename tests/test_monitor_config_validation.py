@@ -12,6 +12,17 @@ def _write_json(path: Path, text: str) -> None:
 
 
 class MonitorConfigValidationTests(unittest.TestCase):
+    def test_top_tab_order_preserves_config_sequence(self):
+        tabs = [
+            {"id": "config", "title": "Config"},
+            {"id": "misc", "title": "Misc"},
+            {"id": "status", "title": "Status"},
+            {"id": "actions", "title": "Actions"},
+            {"id": "logs", "title": "Logs"},
+        ]
+        ordered = monitor._order_top_level_tabs(tabs)
+        self.assertEqual([str(item.get("id") or "") for item in ordered], ["config", "misc", "status", "actions", "logs"])
+
     def test_rejects_unknown_root_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
