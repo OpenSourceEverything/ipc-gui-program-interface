@@ -29,6 +29,7 @@ Contract flow:
 Internal module layout:
 - `monitor.py`: Tk app shell, widget rendering, refresh/action orchestration
 - `monitor_ipc.py`: IPC wire helpers + JSONPath/render utilities
+- `monitor_actions.py`: action argument/command normalization helpers
 - `monitor_config_payload.py`: config-show payload normalization helpers
 
 ## Run
