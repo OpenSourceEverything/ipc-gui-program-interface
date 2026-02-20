@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
+from urllib.parse import urlparse
 
 
 DEFAULT_REFRESH_SECONDS = 1.0
@@ -727,11 +728,23 @@ def _parse_endpoint(endpoint: str) -> tuple[str, int]:
     text = str(endpoint or "").strip()
     if not text:
         raise ValueError("endpoint is empty")
-    if ":" not in text:
-        raise ValueError("endpoint must be host:port")
-    host, raw_port = text.rsplit(":", 1)
-    host = host.strip() or "127.0.0.1"
-    port = int(raw_port.strip())
+
+    if "://" in text:
+        parsed = urlparse(text)
+        host = str(parsed.hostname or "").strip()
+        raw_port = parsed.port
+        if not host:
+            raise ValueError("endpoint host is empty")
+        if raw_port is None:
+            raise ValueError("endpoint must include port")
+        port = int(raw_port)
+    else:
+        if ":" not in text:
+            raise ValueError("endpoint must be host:port")
+        host, raw_port = text.rsplit(":", 1)
+        host = host.strip() or "127.0.0.1"
+        port = int(raw_port.strip())
+
     if port <= 0 or port > 65535:
         raise ValueError("endpoint port is out of range")
     return host, port

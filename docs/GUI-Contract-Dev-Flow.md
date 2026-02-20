@@ -24,8 +24,8 @@ Run after any GUI/schema/target/config-contract change:
 ```bash
 python monitor.py --config monitor_config.json --validate-config
 python scripts/check_target_contract.py --target <repo>/config/gui/monitor.<target>.target.json
-python scripts/ci_target_policy.py --fixture-repo <fixture_repo> --bridge-repo <bridge_repo>
-python scripts/launch_monitor.py --fixture-repo <fixture_repo> --bridge-repo <bridge_repo> --validate-only
+python scripts/ci_target_policy.py --repo <app_repo>
+python scripts/launch_monitor.py --repo <app_repo> --validate-only
 ```
 
 Policy split:

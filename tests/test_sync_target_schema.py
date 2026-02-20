@@ -30,6 +30,31 @@ class SyncTargetSchemaTests(unittest.TestCase):
             self.assertTrue(fixture_schema.exists())
             self.assertTrue(bridge_schema.exists())
 
+    def test_sync_copies_schema_with_generic_repo_flag(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        script = repo_root / "scripts" / "sync_target_schema.py"
+        self.assertTrue(script.exists())
+
+        with tempfile.TemporaryDirectory() as app_a_tmp, tempfile.TemporaryDirectory() as app_b_tmp:
+            app_repo_a = Path(app_a_tmp)
+            app_repo_b = Path(app_b_tmp)
+
+            cmd = [
+                "python",
+                str(script),
+                "--repo",
+                str(app_repo_a),
+                "--repo",
+                str(app_repo_b),
+            ]
+            completed = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+
+            schema_a = app_repo_a / "config" / "gui" / "monitor.target.v2.schema.json"
+            schema_b = app_repo_b / "config" / "gui" / "monitor.target.v2.schema.json"
+            self.assertTrue(schema_a.exists())
+            self.assertTrue(schema_b.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

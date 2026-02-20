@@ -15,6 +15,16 @@ def resolve_target_file(repo: Path, expected_name: str) -> Path:
     return (repo / "config" / "gui" / expected_name).resolve()
 
 
+def resolve_repo_target_files(repo: Path) -> list[Path]:
+    base = (repo / "config" / "gui").resolve()
+    if not base.exists():
+        return []
+    return sorted(
+        (candidate.resolve() for candidate in base.glob("monitor.*.target.json") if candidate.is_file()),
+        key=lambda item: str(item).lower(),
+    )
+
+
 def resolve_fixture_target_files(repo: Path) -> list[Path]:
     base = repo / "config" / "gui"
     names = [
@@ -38,8 +48,97 @@ def build_root_config(include_files: list[Path], refresh: float, timeout: float)
     }
 
 
+def dedupe_paths(items: list[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def collect_generic_targets(args: argparse.Namespace) -> list[Path]:
+    targets: list[Path] = []
+
+    target_values = args.target if isinstance(args.target, list) else []
+    for target_text in target_values:
+        text = str(target_text or "").strip()
+        if not text:
+            continue
+        targets.append(Path(text).resolve())
+
+    repo_values = args.repo if isinstance(args.repo, list) else []
+    for repo_text in repo_values:
+        text = str(repo_text or "").strip()
+        if not text:
+            continue
+        repo = Path(text).resolve()
+        discovered = resolve_repo_target_files(repo)
+        if not discovered:
+            raise RuntimeError(
+                f"no target files found in repo: {repo} "
+                "(expected config/gui/monitor.*.target.json)."
+            )
+        targets.extend(discovered)
+
+    return dedupe_paths(targets)
+
+
+def collect_legacy_targets(args: argparse.Namespace) -> list[Path]:
+    include_files: list[Path] = []
+
+    if args.include_fixture:
+        if args.fixture_target.strip():
+            fixture_target = Path(args.fixture_target).resolve()
+            include_files.append(fixture_target)
+        elif args.fixture_repo.strip():
+            fixture_targets = resolve_fixture_target_files(Path(args.fixture_repo))
+            if not fixture_targets:
+                fixture_target = resolve_target_file(Path(args.fixture_repo), "monitor.fixture.target.json")
+                include_files.append(fixture_target)
+            else:
+                include_files.extend(fixture_targets)
+        else:
+            raise RuntimeError(
+                "fixture target requested but --fixture-repo/--fixture-target was not provided "
+                "(or FIXTURE_REPO/FIXTURE_TARGET env vars are empty)."
+            )
+
+    if args.include_bridge:
+        if args.bridge_target.strip():
+            bridge_target = Path(args.bridge_target).resolve()
+        elif args.bridge_repo.strip():
+            bridge_target = resolve_target_file(Path(args.bridge_repo), "monitor.bridge.target.json")
+        else:
+            raise RuntimeError(
+                "bridge target requested but --bridge-repo/--bridge-target was not provided "
+                "(or BRIDGE_REPO/BRIDGE_TARGET env vars are empty)."
+            )
+        include_files.append(bridge_target)
+
+    include_files = dedupe_paths(include_files)
+    if not include_files:
+        raise RuntimeError("No targets selected. Use --include-fixture and/or --include-bridge.")
+    return include_files
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help="Generic app repo root; includes config/gui/monitor.*.target.json. May be repeated.",
+    )
+    parser.add_argument(
+        "--target",
+        action="append",
+        default=[],
+        help="Explicit target file path. May be repeated.",
+    )
     parser.add_argument("--fixture-repo", default=os.getenv("FIXTURE_REPO", "").strip())
     parser.add_argument("--bridge-repo", default=os.getenv("BRIDGE_REPO", "").strip())
     parser.add_argument("--fixture-target", default=os.getenv("FIXTURE_TARGET", "").strip())
@@ -69,40 +168,14 @@ def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
 
-    include_files: list[Path] = []
-    if args.include_fixture:
-        if args.fixture_target.strip():
-            fixture_target = Path(args.fixture_target).resolve()
-            include_files.append(fixture_target)
-        elif args.fixture_repo.strip():
-            fixture_targets = resolve_fixture_target_files(Path(args.fixture_repo))
-            if not fixture_targets:
-                fixture_target = resolve_target_file(Path(args.fixture_repo), "monitor.fixture.target.json")
-                include_files.append(fixture_target)
-            else:
-                include_files.extend(fixture_targets)
+    try:
+        generic_targets = collect_generic_targets(args)
+        if generic_targets:
+            include_files = generic_targets
         else:
-            print(
-                "fixture target requested but --fixture-repo/--fixture-target was not provided "
-                "(or FIXTURE_REPO/FIXTURE_TARGET env vars are empty).",
-                file=sys.stderr,
-            )
-            return 2
-    if args.include_bridge:
-        if args.bridge_target.strip():
-            bridge_target = Path(args.bridge_target).resolve()
-        elif args.bridge_repo.strip():
-            bridge_target = resolve_target_file(Path(args.bridge_repo), "monitor.bridge.target.json")
-        else:
-            print(
-                "bridge target requested but --bridge-repo/--bridge-target was not provided "
-                "(or BRIDGE_REPO/BRIDGE_TARGET env vars are empty).",
-                file=sys.stderr,
-            )
-            return 2
-        include_files.append(bridge_target)
-    if not include_files:
-        print("No targets selected. Use --include-fixture and/or --include-bridge.", file=sys.stderr)
+            include_files = collect_legacy_targets(args)
+    except RuntimeError as ex:
+        print(str(ex), file=sys.stderr)
         return 2
 
     missing = [str(path) for path in include_files if not path.exists()]

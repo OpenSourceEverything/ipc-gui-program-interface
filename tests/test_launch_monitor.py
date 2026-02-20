@@ -100,6 +100,45 @@ class LaunchMonitorTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("fixture target requested", completed.stderr)
 
+    def test_can_generate_config_from_generic_repo_flag(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        script = repo_root / "scripts" / "launch_monitor.py"
+        self.assertTrue(script.exists())
+
+        with tempfile.TemporaryDirectory() as app_tmp, tempfile.TemporaryDirectory() as out_tmp:
+            app_repo = Path(app_tmp)
+            target_a = app_repo / "config" / "gui" / "monitor.alpha.target.json"
+            target_b = app_repo / "config" / "gui" / "monitor.beta.target.json"
+            target_a.parent.mkdir(parents=True, exist_ok=True)
+            target_a.write_text(
+                '{"configVersion":2,"id":"alpha","title":"Alpha","control":{"mode":"ipc","endpoint":"127.0.0.1:8761","appId":"alpha"},"ui":{"tabs":[]}}',
+                encoding="utf-8",
+            )
+            target_b.write_text(
+                '{"configVersion":2,"id":"beta","title":"Beta","control":{"mode":"ipc","endpoint":"127.0.0.1:8762","appId":"beta"},"ui":{"tabs":[]}}',
+                encoding="utf-8",
+            )
+
+            config_out = Path(out_tmp) / "generated-generic.json"
+            cmd = [
+                "python",
+                str(script),
+                "--repo",
+                str(app_repo),
+                "--config-out",
+                str(config_out),
+                "--no-launch",
+            ]
+            completed = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, check=False)
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            self.assertTrue(config_out.exists())
+
+            payload = json.loads(config_out.read_text(encoding="utf-8"))
+            includes = payload.get("includeFiles", [])
+            self.assertEqual(len(includes), 2)
+            self.assertTrue(any("monitor.alpha.target.json" in item for item in includes))
+            self.assertTrue(any("monitor.beta.target.json" in item for item in includes))
+
 
 if __name__ == "__main__":
     unittest.main()

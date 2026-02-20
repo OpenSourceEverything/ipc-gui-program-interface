@@ -75,6 +75,32 @@ class CiTargetPolicyTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("missing required top-level tabs", completed.stdout)
 
+    def test_passes_with_generic_repo_flag(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        script = repo_root / "scripts" / "ci_target_policy.py"
+
+        with tempfile.TemporaryDirectory() as app_tmp:
+            app_repo = Path(app_tmp)
+            target = app_repo / "config" / "gui" / "monitor.sample.target.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(FULL_TABS_TARGET, encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    "python",
+                    str(script),
+                    "--repo",
+                    str(app_repo),
+                ],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, msg=f"stdout={completed.stdout}\nstderr={completed.stderr}")
+        self.assertIn("OK: strict policy check passed", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

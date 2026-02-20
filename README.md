@@ -1,6 +1,6 @@
 # IPC Monitor GUI
 
-JSON-driven Tkinter monitor for fixture/bridge targets.
+JSON-driven Tkinter monitor for generic targets (fixture/bridge compatible).
 
 ## Quick Start
 
@@ -11,6 +11,17 @@ python scripts/launch_monitor.py
 This generates a root config from repo-local target files and launches the GUI.
 
 Runtime sidecars are service-owned by fixture/bridge repos; GUI remains a blind hook-in.
+
+Generic quick start:
+
+```bash
+python scripts/launch_monitor.py --repo C:\repos\my-app
+python scripts/launch_monitor.py --target C:\repos\my-app\config\gui\monitor.my-app.target.json
+python monitor.py --config examples/monitor_config.example.json
+python examples/minimal_ipc_server.py
+```
+
+See `examples/README.md` for the smallest end-to-end sample.
 
 Contract flow:
 - `docs/GUI-Contract-Dev-Flow.md`
@@ -48,7 +59,8 @@ Compatibility mirror (used by deployed runtime/scripts):
 
 ```bash
 python scripts/launch_monitor.py --no-launch --print-config
-python scripts/sync_target_schema.py
+python scripts/sync_target_schema.py --repo C:\repos\my-app
+python scripts/launch_monitor.py --repo C:\repos\my-app --validate-only
 python scripts/launch_monitor.py --fixture-repo \\H3FT06-40318\c\40318-SOFT --bridge-repo C:\repos\test-fixture-data-bridge
 python scripts/check_target_contract.py --target C:\repos\test-fixture-data-bridge\config\gui\monitor.bridge.target.json
 python scripts/check_target_contract.py --target \\H3FT06-40318\c\40318-SOFT\config\gui\monitor.fixture.target.json
@@ -57,6 +69,8 @@ python scripts/ci_target_policy.py --fixture-repo \\H3FT06-40318\c\40318-SOFT --
 
 Key flags:
 
+- `--repo` (generic repo root; includes `config/gui/monitor.*.target.json`)
+- `--target` (explicit target file path; may be repeated)
 - `--fixture-repo` / `--bridge-repo`
 - `--fixture-target` / `--bridge-target` (explicit file overrides)
 - `--include-fixture` / `--include-bridge`

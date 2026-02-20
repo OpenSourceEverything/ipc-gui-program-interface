@@ -199,6 +199,20 @@ class MonitorConfigValidationTests(unittest.TestCase):
         self.assertIsNone(monitor.json_path_get(payload, "$.a.c"))
         self.assertIsNone(monitor.json_path_get(payload, "$.a.b[0]"))
 
+    def test_parse_endpoint_accepts_host_port(self):
+        host, port = monitor._parse_endpoint("127.0.0.1:8765")
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 8765)
+
+    def test_parse_endpoint_accepts_tcp_scheme(self):
+        host, port = monitor._parse_endpoint("tcp://127.0.0.1:57101")
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 57101)
+
+    def test_parse_endpoint_rejects_missing_port(self):
+        with self.assertRaises(ValueError):
+            monitor._parse_endpoint("tcp://127.0.0.1")
+
     def test_latest_file_prefers_name_when_mtime_equal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
