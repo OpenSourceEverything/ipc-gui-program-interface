@@ -8,7 +8,6 @@ import glob
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import threading
@@ -19,7 +18,20 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
-from urllib.parse import urlparse
+
+from monitor_config_payload import (
+    _normalize_config_entries_payload,
+    _normalize_config_paths_payload,
+    _normalize_config_show_payload,
+)
+from monitor_ipc import (
+    _iter_jsonpath_tokens,
+    _parse_endpoint,
+    _request_ipc_v0,
+    json_path_get,
+    render_value,
+    try_extract_json_object,
+)
 
 
 DEFAULT_REFRESH_SECONDS = 1.0
@@ -109,73 +121,6 @@ def _target_control(target: dict[str, Any]) -> dict[str, Any]:
 def _is_ipc_control(target: dict[str, Any]) -> bool:
     control = _target_control(target)
     return str(control.get("mode") or "") == "ipc"
-
-
-def _normalize_config_paths_payload(paths_raw: Any) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    if isinstance(paths_raw, list):
-        for item in paths_raw:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("key") or "").strip()
-            if not key:
-                continue
-            value = item.get("value")
-            if value is None and "path" in item:
-                value = item.get("path")
-            normalized.append({"key": key, "value": value})
-        return normalized
-
-    if isinstance(paths_raw, dict):
-        for key_raw, value in paths_raw.items():
-            key = str(key_raw or "").strip()
-            if not key:
-                continue
-            normalized.append({"key": key, "value": value})
-    return normalized
-
-
-def _normalize_config_entries_payload(entries_raw: Any, paths: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not isinstance(entries_raw, list):
-        return []
-
-    path_values: dict[str, Any] = {}
-    for item in paths:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("key") or "").strip()
-        if not key:
-            continue
-        path_values[key] = item.get("value")
-
-    normalized: list[dict[str, Any]] = []
-    for item in entries_raw:
-        if not isinstance(item, dict):
-            continue
-        entry = dict(item)
-        key = str(entry.get("key") or "").strip()
-        if not key:
-            continue
-        allowed = entry.get("allowed")
-        if not isinstance(allowed, list):
-            legacy_allowed = entry.get("allowedValues")
-            if isinstance(legacy_allowed, list):
-                entry["allowed"] = list(legacy_allowed)
-        if key in path_values:
-            if not str(entry.get("path") or "").strip():
-                entry["path"] = path_values[key]
-            if "pathEntry" not in entry:
-                entry["pathEntry"] = True
-        normalized.append(entry)
-    return normalized
-
-
-def _normalize_config_show_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(payload)
-    paths = _normalize_config_paths_payload(normalized.get("paths"))
-    normalized["paths"] = paths
-    normalized["entries"] = _normalize_config_entries_payload(normalized.get("entries"), paths)
-    return normalized
 
 
 def _validate_root_config_payload(base: dict[str, Any], source_path: Path) -> None:
@@ -676,42 +621,6 @@ def as_log_panel_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [entry for entry in panels if isinstance(entry, dict)]
 
 
-def try_extract_json_object(output: str) -> tuple[dict[str, Any] | None, str]:
-    text = (output or "").strip()
-    if not text:
-        return None, "empty status output"
-
-    try:
-        payload = json.loads(text)
-        if isinstance(payload, dict):
-            return payload, ""
-        return None, "status output is not a JSON object"
-    except Exception:
-        pass
-
-    first_brace = text.find("{")
-    if first_brace >= 0:
-        decoder = json.JSONDecoder()
-        best: dict[str, Any] | None = None
-        best_span = -1
-        for index, char in enumerate(text[first_brace:]):
-            if char != "{":
-                continue
-            try:
-                payload, end_index = decoder.raw_decode(text[first_brace + index :])
-            except Exception:
-                continue
-            if isinstance(payload, dict):
-                span = int(end_index)
-                if span > best_span:
-                    best = payload
-                    best_span = span
-        if best is not None:
-            return best, ""
-
-    return None, "failed to parse JSON object from status output"
-
-
 def run_cmd(cmd: list[str], cwd: Path | None, timeout_seconds: float) -> tuple[int, str, str]:
     completed = subprocess.run(
         cmd,
@@ -722,131 +631,6 @@ def run_cmd(cmd: list[str], cwd: Path | None, timeout_seconds: float) -> tuple[i
         creationflags=_no_window_creationflags(),
     )
     return int(completed.returncode), completed.stdout or "", completed.stderr or ""
-
-
-def _parse_endpoint(endpoint: str) -> tuple[str, int]:
-    text = str(endpoint or "").strip()
-    if not text:
-        raise ValueError("endpoint is empty")
-
-    if "://" in text:
-        parsed = urlparse(text)
-        host = str(parsed.hostname or "").strip()
-        raw_port = parsed.port
-        if not host:
-            raise ValueError("endpoint host is empty")
-        if raw_port is None:
-            raise ValueError("endpoint must include port")
-        port = int(raw_port)
-    else:
-        if ":" not in text:
-            raise ValueError("endpoint must be host:port")
-        host, raw_port = text.rsplit(":", 1)
-        host = host.strip() or "127.0.0.1"
-        port = int(raw_port.strip())
-
-    if port <= 0 or port > 65535:
-        raise ValueError("endpoint port is out of range")
-    return host, port
-
-
-def _request_ipc_v0(
-    endpoint: str,
-    request: dict[str, Any],
-    *,
-    timeout_seconds: float,
-) -> tuple[int, dict[str, Any], str]:
-    try:
-        host, port = _parse_endpoint(endpoint)
-        payload = request if isinstance(request, dict) else {}
-        with socket.create_connection((host, port), timeout=max(0.1, float(timeout_seconds))) as sock:
-            sock.settimeout(max(0.1, float(timeout_seconds)))
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            response_line = sock.makefile("r", encoding="utf-8", newline="\n").readline().strip()
-        if not response_line:
-            return 2, {}, "ipc response is empty"
-        response_obj = json.loads(response_line)
-        if not isinstance(response_obj, dict):
-            return 2, {}, "ipc response is not an object"
-        if bool(response_obj.get("ok", False)):
-            return 0, response_obj, ""
-        error_obj = response_obj.get("error")
-        if isinstance(error_obj, dict):
-            return 2, response_obj, str(error_obj.get("message") or "ipc request failed")
-        return 2, response_obj, "ipc request failed"
-    except Exception as ex:
-        return 2, {}, f"ipc request failed: {ex}"
-
-
-def _iter_jsonpath_tokens(path: str) -> list[str | int] | None:
-    text = str(path or "").strip()
-    if not text.startswith("$"):
-        return None
-    if text == "$":
-        return []
-
-    tokens: list[str | int] = []
-    index = 1
-    length = len(text)
-    while index < length:
-        current = text[index]
-        if current == ".":
-            index += 1
-            start = index
-            while index < length and text[index] not in ".[":
-                index += 1
-            key = text[start:index]
-            if not key:
-                return None
-            tokens.append(key)
-            continue
-
-        if current == "[":
-            index += 1
-            start = index
-            while index < length and text[index].isdigit():
-                index += 1
-            if start == index or index >= length or text[index] != "]":
-                return None
-            tokens.append(int(text[start:index]))
-            index += 1
-            continue
-
-        return None
-
-    return tokens
-
-
-def json_path_get(payload: Any, path: str) -> Any | None:
-    tokens = _iter_jsonpath_tokens(path)
-    if tokens is None:
-        return None
-
-    node: Any = payload
-    for token in tokens:
-        if isinstance(token, int):
-            if not isinstance(node, list):
-                return None
-            if token < 0 or token >= len(node):
-                return None
-            node = node[token]
-            continue
-
-        if not isinstance(node, dict):
-            return None
-        if token not in node:
-            return None
-        node = node[token]
-    return node
-
-
-def render_value(value: Any) -> str:
-    if value is None:
-        return "-"
-    if isinstance(value, (dict, list)):
-        text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-        return text if len(text) <= 200 else text[:197] + "..."
-    return str(value)
 
 
 def resolve_latest_file(path_expr: str) -> Path | None:

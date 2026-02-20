@@ -26,6 +26,11 @@ See `examples/README.md` for the smallest end-to-end sample.
 Contract flow:
 - `docs/GUI-Contract-Dev-Flow.md`
 
+Internal module layout:
+- `monitor.py`: Tk app shell, widget rendering, refresh/action orchestration
+- `monitor_ipc.py`: IPC wire helpers + JSONPath/render utilities
+- `monitor_config_payload.py`: config-show payload normalization helpers
+
 ## Run
 
 ```bash
