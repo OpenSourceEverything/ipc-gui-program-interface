@@ -1,0 +1,99 @@
+{
+  "$schema": "../../schemas/monitor.target.v2.schema.json",
+  "configVersion": 2,
+  "id": "sample-app",
+  "title": "Sample App",
+  "refreshSeconds": 1.0,
+  "control": {
+    "mode": "ipc",
+    "endpoint": "127.0.0.1:8777",
+    "appId": "sample-app",
+    "timeoutSeconds": 2.0,
+    "jobPollMs": 150,
+    "jobTimeoutSeconds": 30.0
+  },
+  "ui": {
+    "tabs": [
+      {
+        "id": "status",
+        "title": "Status",
+        "widgets": [
+          {
+            "type": "kv",
+            "title": "Overview",
+            "items": [
+              {
+                "label": "App ID",
+                "jsonpath": "$.appId"
+              },
+              {
+                "label": "Running",
+                "jsonpath": "$.running"
+              },
+              {
+                "label": "Boot ID",
+                "jsonpath": "$.bootId"
+              },
+              {
+                "label": "Profile",
+                "jsonpath": "$.profile"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "config",
+        "title": "Config",
+        "widgets": [
+          {
+            "type": "config_file_select",
+            "title": "Profile",
+            "showAction": "config_show",
+            "setAction": "config_set",
+            "key": "profile",
+            "pathKey": "profilePath",
+            "reloadLabel": "Reload"
+          },
+          {
+            "type": "config_editor",
+            "title": "Settings",
+            "showAction": "config_show",
+            "setAction": "config_set",
+            "pathKey": "profilePath",
+            "settableOnly": true
+          }
+        ]
+      },
+      {
+        "id": "actions",
+        "title": "Actions",
+        "widgets": [
+          {
+            "type": "action_select",
+            "title": "Run Action"
+          },
+          {
+            "type": "action_output",
+            "title": "Output"
+          }
+        ]
+      },
+      {
+        "id": "logs",
+        "title": "Logs",
+        "widgets": [
+          {
+            "type": "text_block",
+            "title": "Logs",
+            "text": "This sample does not expose log streams."
+          }
+        ]
+      }
+    ]
+  },
+  "actionOutput": {
+    "maxLines": 1200,
+    "maxBytes": 1000000
+  }
+}

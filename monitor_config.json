@@ -1,0 +1,9 @@
+{
+  "$schema": "./schemas/monitor.root.schema.json",
+  "refreshSeconds": 1.0,
+  "commandTimeoutSeconds": 10.0,
+  "includeFiles": [
+    "\\\\H3FT06-40318\\c\\40318-SOFT\\config\\gui\\monitor.fixture.target.json",
+    "C:\\repos\\test-fixture-data-bridge\\config\\gui\\monitor.bridge.target.json"
+  ]
+}

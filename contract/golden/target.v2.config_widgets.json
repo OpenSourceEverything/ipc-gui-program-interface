@@ -1,0 +1,51 @@
+{
+  "$schema": "../schemas/monitor.target.v2.schema.json",
+  "configVersion": 2,
+  "id": "sample-config",
+  "title": "Sample Config Widgets",
+  "control": {
+    "mode": "ipc",
+    "endpoint": "127.0.0.1:8765",
+    "appId": "sample-config"
+  },
+  "ui": {
+    "tabs": [
+      {
+        "id": "config",
+        "title": "Config",
+        "widgets": [
+          {
+            "type": "config_file_select",
+            "title": "Profile",
+            "showAction": "config_show",
+            "setAction": "config_set",
+            "key": "profile",
+            "pathKey": "profilePath"
+          },
+          {
+            "type": "config_editor",
+            "title": "Settings",
+            "showAction": "config_show",
+            "setAction": "config_set",
+            "pathKey": "profilePath",
+            "settableOnly": true
+          }
+        ]
+      },
+      {
+        "id": "actions",
+        "title": "Actions",
+        "widgets": [
+          {
+            "type": "action_select",
+            "title": "Actions"
+          },
+          {
+            "type": "action_output",
+            "title": "Output"
+          }
+        ]
+      }
+    ]
+  }
+}

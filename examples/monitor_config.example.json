@@ -1,0 +1,12 @@
+{
+  "$schema": "../schemas/monitor.root.schema.json",
+  "refreshSeconds": 1.0,
+  "commandTimeoutSeconds": 10.0,
+  "actionOutput": {
+    "maxLines": 1200,
+    "maxBytes": 1000000
+  },
+  "includeFiles": [
+    "targets/minimal.ipc.target.json"
+  ]
+}
